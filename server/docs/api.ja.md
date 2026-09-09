@@ -26,11 +26,28 @@ curl -fsS "${BASE_URL}/v1/health"
 
 ## 任意の生体検知 addon
 
-`server/config/server.toml` では生体検知は既定で無効です。`inference.addons` と `addons.auto_download` は両方 `[]` で、キーのない旧設定も無効のままです。以下は手動で有効にする例です。再起動前にモデルをインストールしてください。
+`server/config/server.toml` では生体検知は既定で無効です。`inference.addons` と `addons.auto_download` は両方 `[]` で、キーのない旧設定も無効のままです。
 
-**システム → 生体検知** で再起動後に有効にするダウンロード操作を選びます。公開モデルの SHA-256 を検証後、両リストを `["liveness"]` に保存し、他の設定を保持します。検証済みキャッシュは再利用します。現在の処理は変わらず、**手動で Server を再起動**すると有効になります。失敗時はエラーと再試行を表示し、ダウンロード失敗では設定を有効にしません。
+**コマンドラインで有効化する方法（Server の初回起動前も使用可能）：**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` は最初に既存設定を更新できるか確認します。基本パッケージ、設定された追加ダウンロード、生体検知モデルをインストール・検証してから、`inference.addons` と `addons.auto_download` に `liveness` を追加し、他の項目、コメント、設定を保持します。検証済みキャッシュを再利用する場合も有効化設定を保存します。ダウンロード失敗時は設定を変更せず、設定保存に失敗するとエラーと非ゼロ終了コードを返します。保存済みの有効なモデルは再試行時に再利用できます。
+
+両 Compose サービスは既存の `server/config` 全体を `/etc/insightface` に書き込み可能でマウントし、`create_host_path: false` を保持します。Server が未起動でもインストーラーがホスト設定を原子的に更新できます。ディレクトリと `server.toml` は必須です。
+
+Server を先に起動する必要はありません。新規環境では次の `up -d` で生体検知が有効になります。すでに実行中の場合は `docker compose -f server/deploy/compose.cpu.yml restart server` が必要で、`up -d` だけでは保存済み設定を再読込しません。CUDA では `compose.cuda12.yml` を使います。
+
+`--enable-liveness` がない場合、`models install` は従来どおり設定を書き換えず、既定の生体検知は無効です。`models addons install liveness` はダウンロードと検証のみで、有効化しません。以下の **システム → 生体検知** から有効化する方法も使えます。
+
+**システム → 生体検知** で再起動後に有効にするダウンロード操作を選びます。公開モデルの SHA-256 を検証後、両リストに `liveness` を追加し、他の項目、コメント、設定を保持します。検証済みキャッシュは再利用します。現在の処理は変わらず、**手動で Server を再起動**すると有効になります。失敗時はエラーと再試行を表示し、ダウンロード失敗では設定を有効にしません。
 
 [Web ダウンロードのマウントと権限](user-guide.ja.md#web-ダウンロードのマウントと権限).
+
+**高度な使い方：手動設定。** 以下は有効化フラグや Web 操作の代替です。再起動前にモデルをインストールしてください。
 
 ```toml
 [inference]
@@ -48,7 +65,7 @@ auto_download = ["liveness"]
 
 `inference.addons` は実行時の使用、`addons.auto_download` は基本モデルのインストール時の追加ダウンロードを制御します。後者を `["liveness"]` にすると、基本モデルがキャッシュ済みでも addon を追加します。起動時のダウンロードはありません。インストーラーと Server は同じ設定ファイルを読みます。
 
-以下のインストールコマンドの前に、[ユーザーガイドの初期設定](user-guide.ja.md)に従ってホスト側のディレクトリ権限と UID/GID の export を設定してください。
+[ユーザーガイドの初期設定](user-guide.ja.md)にある現在の Compose と既存設定を使用します。Server とインストーラーは root で単一の書き込み可能なモデルマウントを共有します。Compose がモデルルートを作成し、明示的な addon ダウンロード時に `addons/` を作成します。ホスト UID/GID や手動の権限設定は不要です。
 
 ```bash
 docker compose -f server/deploy/compose.cpu.yml run --rm models addons install liveness

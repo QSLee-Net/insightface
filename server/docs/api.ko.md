@@ -26,11 +26,28 @@ curl -fsS "${BASE_URL}/v1/health"
 
 ## 선택적 라이브니스 addon
 
-`server/config/server.toml`의 라이브니스는 기본적으로 꺼져 있습니다. `inference.addons`와 `addons.auto_download`는 모두 `[]`이며 키가 없는 이전 설정도 비활성 상태를 유지합니다. 아래는 수동 활성화 예시입니다. 다시 시작하기 전에 모델을 설치하세요.
+`server/config/server.toml`의 라이브니스는 기본적으로 꺼져 있습니다. `inference.addons`와 `addons.auto_download`는 모두 `[]`이며 키가 없는 이전 설정도 비활성 상태를 유지합니다.
 
-**시스템 → 라이브니스 검사**에서 모델을 다운로드하고 다음 시작 시 활성화합니다. SHA-256 검증 후 두 목록을 `["liveness"]`로 저장하고 다른 설정은 보존합니다. 검증된 파일은 재사용합니다. 현재 실행 상태는 그대로이며 **Server를 수동으로 다시 시작**해야 적용됩니다. 오류 시 재시도할 수 있고 다운로드 실패로 활성화되지 않습니다.
+**명령줄에서 활성화하기: Server를 처음 시작하기 전에도 가능합니다.**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness`는 먼저 기존 설정을 업데이트할 수 있는지 검사합니다. 기본 패키지, 설치 설정에 지정된 addons와 라이브니스 모델을 설치·검증한 뒤 `inference.addons`와 `addons.auto_download`에 `liveness`를 추가하고 다른 항목, 주석과 설정을 보존합니다. 검증된 캐시를 재사용해도 활성화 설정을 저장합니다. 다운로드 실패 시 설정은 바뀌지 않으며, 설정 저장 실패는 명확한 오류와 0이 아닌 종료 상태를 반환합니다. 유효한 캐시는 재시도 시 재사용할 수 있습니다.
+
+두 Compose 서비스는 기존 `server/config` 전체를 `/etc/insightface`에 쓰기 가능하게 마운트하고 `create_host_path: false`를 유지합니다. 따라서 Server가 실행되지 않아도 설치 도구가 호스트 설정을 원자적으로 갱신할 수 있습니다. 디렉터리와 `server.toml`은 있어야 합니다.
+
+Server를 먼저 실행할 필요는 없습니다. 새 배포는 다음 `up -d`에서 라이브니스가 활성화됩니다. 이미 실행 중이면 `docker compose -f server/deploy/compose.cpu.yml restart server`가 필요하며, `up -d`만으로는 저장된 설정을 다시 읽지 않습니다. CUDA는 `compose.cuda12.yml`을 사용하세요.
+
+`--enable-liveness`를 지정하지 않으면 `models install`은 기존 동작을 유지하고 설정을 쓰지 않으며 기본 라이브니스는 꺼져 있습니다. `models addons install liveness`는 다운로드와 검증만 하며 활성화하지 않습니다. 아래의 **시스템 → 라이브니스 검사**에서도 활성화할 수 있습니다.
+
+**시스템 → 라이브니스 검사**에서 모델을 다운로드하고 다음 시작 시 활성화합니다. SHA-256 검증 후 두 목록에 `liveness`를 추가하고 다른 항목, 주석과 설정은 보존합니다. 검증된 파일은 재사용합니다. 현재 실행 상태는 그대로이며 **Server를 수동으로 다시 시작**해야 적용됩니다. 오류 시 재시도할 수 있고 다운로드 실패로 활성화되지 않습니다.
 
 [Web 다운로드를 위한 마운트와 권한](user-guide.ko.md#web-다운로드를-위한-마운트와-권한).
+
+**고급 사용: 수동 설정.** 다음 설정은 활성화 플래그나 Web 작업의 대안입니다. 다시 시작하기 전에 모델을 설치하세요.
 
 ```toml
 [inference]
@@ -48,7 +65,7 @@ auto_download = ["liveness"]
 
 `inference.addons`는 실행을, `addons.auto_download`는 기본 패키지 설치 시 추가 다운로드를 제어합니다. 후자를 `["liveness"]`로 설정하면 캐시된 기본 패키지에도 addon을 설치합니다. Server 시작 시 다운로드하지 않습니다. 설치 도구와 Server는 같은 파일을 읽습니다.
 
-아래 설치 명령을 실행하기 전에 [사용자 가이드의 초기 설정](user-guide.ko.md)에 따라 호스트 디렉터리 권한을 준비하고 UID/GID를 내보내세요.
+[사용자 가이드의 초기 설정](user-guide.ko.md)에 있는 현재 Compose와 기존 설정을 사용하세요. Server와 설치 도구는 root로 하나의 쓰기 가능한 모델 마운트를 공유합니다. Compose가 모델 루트를 생성하고 명시적인 addon 다운로드 시 `addons/`를 만듭니다. 호스트 UID/GID나 수동 권한 설정은 필요하지 않습니다.
 
 ```bash
 docker compose -f server/deploy/compose.cpu.yml run --rm models addons install liveness

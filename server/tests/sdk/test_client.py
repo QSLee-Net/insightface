@@ -85,7 +85,7 @@ def test_health_sends_auth_and_exposes_request_metadata() -> None:
         assert request.method == "GET"
         assert request.url == httpx.URL("http://server.test/v1/health")
         assert request.headers["authorization"] == "Bearer secret"
-        assert request.headers["user-agent"] == "insightface-server-python/0.3.0"
+        assert request.headers["user-agent"] == "insightface-server-python/0.3.1"
         return response(200, {"status": "ok"})
 
     with client_for(handler) as client:

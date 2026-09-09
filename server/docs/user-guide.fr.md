@@ -14,20 +14,23 @@ Pour utiliser la détection du vivant, consultez [configuration, installation et
 
 La version CPU nécessite Linux x86_64, Docker Engine et Docker Compose. CUDA exige en plus un pilote NVIDIA compatible et NVIDIA Container Toolkit ; il n’est pas nécessaire d’installer CUDA, cuDNN, ORT, Python ou OpenCV sur l’hôte.
 
-Avant la première installation de modèle ou le démarrage des conteneurs, préparez les répertoires hôtes depuis la racine du dépôt. Le répertoire des addons est requis même lorsque la détection du vivant est désactivée ; Compose signale une erreur s’il manque. Le GID partagé 10001 et setgid permettent à l’installateur et au Server d’y écrire. Répétez les exports UID/GID dans chaque nouveau shell pour utiliser votre utilisateur hôte. Les modèles de base restent en lecture seule dans le Server.
+Exécutez les commandes depuis la racine du dépôt avec `server/config/server.toml` présent. Server et l’installateur de modèles s’exécutent en root (`0:0`). Compose crée `server/.models` si nécessaire et le monte une seule fois en écriture dans `/models`. Le sous-répertoire `addons` est créé lors du téléchargement d’un addon. Aucun export UID/GID ni préparation manuelle des répertoires ou permissions n’est nécessaire. Le démarrage normal ne télécharge pas de modèles ; la détection du vivant est désactivée par défaut.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+Pour configurer facultativement la détection du vivant pendant l’installation du modèle, utilisez cette commande à la place :
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server n’a pas besoin de fonctionner. Pour une nouvelle installation, le prochain `up -d` active la détection du vivant ; si Server fonctionne déjà, utilisez `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` seul ne recharge pas les paramètres enregistrés. Pour CUDA, utilisez `compose.cuda12.yml`.
 
 Pour le GPU, utilisez `compose.cuda12.yml` et le port `18098`. L’installateur affiche la licence avant téléchargement ; les modèles publics InsightFace sont réservés à la recherche non commerciale sans licence commerciale distincte.
 
@@ -35,11 +38,28 @@ Le Compose fourni désactive l’authentification par défaut pour une évaluati
 
 ## Addon optionnel de détection du vivant
 
-La détection du vivant est désactivée par défaut dans `server/config/server.toml` : `inference.addons` et `addons.auto_download` valent `[]`. Les anciennes configurations sans ces clés restent désactivées. Voici un exemple d’activation manuelle ; installez le modèle avant de redémarrer.
+La détection du vivant est désactivée par défaut dans `server/config/server.toml` : `inference.addons` et `addons.auto_download` valent `[]`. Les anciennes configurations sans ces clés restent désactivées.
 
-Dans **Système → Détection du vivant**, choisissez **Télécharger et activer après redémarrage**. Après vérification SHA-256, les deux listes deviennent `["liveness"]` ; les autres réglages sont conservés. Un fichier déjà vérifié est réutilisé. **Redémarrez manuellement le Server** pour appliquer le changement. Les erreurs permettent de réessayer ; un téléchargement échoué n’active pas la détection.
+**Activer en ligne de commande, y compris avant le premier démarrage de Server :**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` vérifie d’abord que la configuration existante peut être mise à jour. Il installe et vérifie le paquet de base, les addons configurés pour l’installation et la détection du vivant, puis ajoute `liveness` à `inference.addons` et `addons.auto_download`, en conservant les autres entrées, commentaires et paramètres. Les caches vérifiés sont réutilisés, mais l’activation est enregistrée même si les modèles sont déjà en cache. Un échec de téléchargement ne modifie pas la configuration ; un échec d’enregistrement produit une erreur explicite et un code de sortie non nul. Les fichiers valides en cache restent réutilisables lors d’un nouvel essai.
+
+Les deux services Compose montent tout le répertoire existant `server/config` en écriture dans `/etc/insightface`, avec `create_host_path: false`. L’installateur peut ainsi mettre à jour atomiquement la configuration de l’hôte sans Server en cours d’exécution. Le répertoire et `server.toml` doivent exister.
+
+Server n’a pas besoin de fonctionner. Pour une nouvelle installation, le prochain `up -d` active la détection du vivant ; si Server fonctionne déjà, utilisez `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` seul ne recharge pas les paramètres enregistrés. Pour CUDA, utilisez `compose.cuda12.yml`.
+
+Sans `--enable-liveness`, `models install` garde son comportement et n’écrit pas la configuration ; la détection du vivant reste désactivée par défaut. `models addons install liveness` télécharge et vérifie seulement l’addon, sans l’activer. L’activation reste aussi disponible dans **Système → Détection du vivant**, comme indiqué ci-dessous.
+
+Dans **Système → Détection du vivant**, choisissez **Télécharger et activer après redémarrage**. Après vérification SHA-256, `liveness` est ajouté aux deux listes ; les autres entrées, commentaires et réglages sont conservés. Un fichier déjà vérifié est réutilisé. **Redémarrez manuellement le Server** pour appliquer le changement. Les erreurs permettent de réessayer ; un téléchargement échoué n’active pas la détection.
 
 Système distingue l’installation vérifiée (`installed`), l’exécution actuelle (`enabled`), la configuration enregistrée pour le prochain démarrage (`configured_enabled`) et le redémarrage nécessaire (`restart_required`). Le téléchargement ou l’enregistrement ne modifie pas l’inférence en cours. Pour désactiver, enregistrez `inference.addons=[]` et `addons.auto_download=[]` dans le même fichier, puis redémarrez manuellement. L’action Web ne modifie pas le réglage d’inscription ; sa valeur par défaut reste `liveness_on_registration=false`.
+
+**Avancé : configuration manuelle.** Ces paramètres remplacent le paramètre d’activation ou l’action Web ; installez le modèle avant de redémarrer.
 
 ```toml
 [inference]
@@ -67,14 +87,9 @@ Un modèle activé absent arrête le démarrage avec `addon_model_missing` ; un 
 
 ### Montages et permissions pour les téléchargements Web
 
-Compose garde `/models` en lecture seule et monte uniquement `server/.models/addons` en écriture dans `/models/addons`. Effectuez la préparation initiale des répertoires ci-dessus avant toute installation de modèle ou tout démarrage avec les fichiers Compose actuels, y compris lors d’une mise à niveau. Pour l’action Web, accordez aussi à l’utilisateur Server (UID/GID 10001) l’écriture sur tout `server/config`, monté dans `/etc/insightface`, afin d’enregistrer `server.toml` de façon atomique. Sous Linux, depuis la racine du dépôt :
+Les fichiers Compose fournis montent tout `/models` en écriture ; aucun montage séparé de `/models/addons` n’est nécessaire. Server et l’installateur utilisent root (`0:0`), et l’installation crée `addons` si nécessaire. Tout le répertoire existant `server/config` est monté en écriture dans `/etc/insightface` dans les deux services pour permettre à l’action Web et à `--enable-liveness` d’enregistrer `server.toml` de manière atomique. Cette configuration ne nécessite ni exports UID/GID, ni `chgrp`, ni `chmod`. Les fichiers ou montages volontairement en lecture seule empêchent toujours la gestion Web ; vérifiez les permissions des montages personnalisés.
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+Le montage de modèles de chaque service utilise `create_host_path: true`. Les services conservent les capabilities Docker par défaut ; `cap_drop: [ALL]` n’est pas appliqué. Le reste du système de fichiers reste en lecture seule et `no-new-privileges` demeure actif. Root peut modifier les fichiers des montages en écriture ; les nouveaux téléchargements peuvent appartenir à root sur l’hôte.
 
 Pour un déploiement personnalisé, utilisez les chemins réellement montés ; pour CUDA, utilisez `compose.cuda12.yml`. Les anciens montages en lecture seule restent utilisables avec la détection du vivant désactivée. L’action Web explique son indisponibilité ; vous pouvez aussi installer par CLI et modifier la configuration manuellement. Après enregistrement dans le Web, appliquez avec `docker compose -f server/deploy/compose.cpu.yml restart server`. Un changement de montage ou de variables proxy nécessite de recréer le conteneur.
 
@@ -167,7 +182,7 @@ Avec la vérification en `normal`, les visages bloqués ont `status: liveness_bl
 
 ## 6. Données et sécurité
 
-Persistez `/data` et gardez les modèles de base sous `/models` en lecture seule. La gestion Web écrit seulement dans `/models/addons` et le répertoire de configuration. Sauvegardez ensemble SQLite et les recadrages avant une opération massive. Les clés sont hashées ; redémarrer le même volume avec un autre `INSIGHTFACE_API_KEY` fait tourner la clé active. Ne journalisez ni images, ni embeddings, ni clés.
+Conservez et sauvegardez `/data`, le répertoire des modèles et la configuration. Le déploiement fourni utilise root avec les capabilities Docker par défaut et `/models` en écriture ; le service peut modifier les modèles, la configuration et les données montés. Le reste du système de fichiers du conteneur demeure en lecture seule et `no-new-privileges` reste actif ; `privileged` n’est pas nécessaire. Limitez l’accès à Docker et à l’hôte, et ne montez pas de répertoires hôtes étrangers au service. Avant les opérations en masse, sauvegardez SQLite et les recadrages ensemble. Les clés sont hachées ; démarrer le même volume avec un nouvel `INSIGHTFACE_API_KEY` change la clé active. Ne journalisez ni images, ni embeddings, ni clés.
 
 L’explorateur de schéma OpenAPI destiné aux développeurs se trouve sous `/docs` ; les instructions API orientées tâches sont dans cette aide. Fournissez `x-request-id` lors d’un incident. `401` concerne la clé, `409 collection_model_mismatch` le contrat modèle, `422 face_not_found` l’absence de visage exploitable.
 
@@ -252,26 +267,29 @@ le code, les ressources du frontend ou l’aide utilisateur intégrée, nécessi
 une nouvelle construction et une nouvelle validation.
 
 Ajoutez `--pull never` aux commandes Compose pour employer l’image locale. Les
-tags immuables sont `0.3.0-cpu` et `0.3.0-cuda12`; `cpu` et `cuda12` suivent la
+tags immuables sont `0.3.1-cpu` et `0.3.1-cuda12`; `cpu` et `cuda12` suivent la
 dernière version stable et aucun `latest` n’est publié. Avant mise à niveau,
 arrêtez les écritures et sauvegardez `/data` et les crops avec une méthode sûre
 pour SQLite. N’utilisez pas `docker compose down -v`, qui supprime le volume.
 
-### Mise à niveau vers 0.3.0
+### Mise à niveau vers 0.3.1
 
-Cette version ajoute `raccoon_s` et `raccoon_l`, la prise en charge de leurs
-manifestes, la détection du vivant facultative, l’installation d’addons depuis
-la Web UI et les images BMP. Le Server utilise les modèles de détection et de
-reconnaissance Raccoon ; le vérificateur du paquet n’est pas chargé.
+0.3.1 simplifie le déploiement : Server et l’installateur utilisent root, Compose crée le répertoire des modèles si nécessaire et un unique `/models` en écriture remplace le montage séparé des addons.
 
-**1.** Mettez le code du Server et les fichiers Compose à la version 0.3.0 en
+Depuis 0.3.0, `raccoon_s`, `raccoon_l`, leurs manifestes, la détection du vivant facultative, l’installation Web d’addons et les images BMP sont pris en charge. Server utilise la détection et la reconnaissance Raccoon ; le vérificateur n’est pas chargé. Ces fonctionnalités et contrats de réponse API restent inchangés en 0.3.1.
+
+**1.** Mettez le code du Server et les fichiers Compose à la version 0.3.1 en
 conservant vos réglages dans `server/config/server.toml` et vos surcharges
 de déploiement. Gardez le chemin actuel des modèles, le nom du volume
 `/data`, le stockage des recadrages, les ports et les réglages de clé API.
 Dans les fichiers Compose personnalisés, mettez les images des deux services
-`server` et `models` à `0.3.0-cpu` ou `0.3.0-cuda12` selon l’environnement.
+`server` et `models` à `0.3.1-cpu` ou `0.3.1-cuda12` selon l’environnement.
 Pour les commandes ci-dessous, utilisez les mêmes fichiers Compose,
 surcharges et nom de projet que pour votre déploiement habituel.
+
+Avant le démarrage, mettez aussi à jour vos surcharges Compose, pas seulement les tags : les deux services doivent utiliser `user: "0:0"`, sans `cap_drop: [ALL]` ni anciens réglages UID/GID ou `group_add`. Utilisez pour chacun un seul bind mount en écriture dans `/models` avec `create_host_path: true` ; supprimez le montage séparé de `/models/addons` et `x-addons-path`. Conservez le chemin réel des modèles et leurs fichiers, addons compris. Les montages de configuration gardent `create_host_path: false` : `server/config` et `server.toml` doivent donc rester présents. Conservez le volume de données et sauvegardez données, modèles et configuration avant le changement. Retirez les anciens réglages d’utilisateur et de montages de vos surcharges ; changer seulement l’image ne les corrige pas.
+
+Conservez le système de fichiers du conteneur en lecture seule et `no-new-privileges`. Les deux services ont besoin de tout le répertoire de configuration en écriture. Remplacez l’ancien montage du fichier seul en lecture seule de l’installateur par celui du répertoire. Le déploiement standard ne nécessite ni modification récursive des permissions existantes, ni préparation d’un répertoire d’addons.
 
 **2.** Téléchargez les nouvelles images et recréez le conteneur Server. Depuis la
 racine du dépôt, choisissez les commandes de votre déploiement actuel :
@@ -292,13 +310,13 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-Si vous compilez localement, construisez d’abord les images 0.3.0 et utilisez
+Si vous compilez localement, construisez d’abord les images 0.3.1 et utilisez
 `up -d --no-build --pull never --force-recreate server` au lieu de télécharger
 les images. `docker compose restart` seul ne passe pas à une nouvelle image
 et n’applique pas les modifications de montage.
 
 **3.** Le démarrage applique automatiquement les migrations de base de données.
-Attendez que `/v1/health` indique `ready` et la version `0.3.0`, puis vérifiez
+Attendez que `/v1/health` indique `ready` et la version `0.3.1`, puis vérifiez
 dans **Système** le modèle et le fournisseur d’exécution attendus. Confirmez
 la présence des Collections et des personnes existantes, puis effectuez une
 recherche connue. Si le modèle et le contrat d’embedding restent identiques,
@@ -328,10 +346,10 @@ d’embedding du nouveau modèle : créez des Collections compatibles et
 réinscrivez les personnes, ou effectuez une migration de données distincte.
 La Web UI ne change pas le paquet de modèle de base.
 
-**Compatibilité API et SDK :** Les résultats des modèles, Collections et
+**Compatibilité API et SDK depuis 0.3.0 :** Les résultats des modèles, Collections et
 FaceSamples ne contiennent plus `model_version`. L’identité du modèle utilise
 `model_id`, et la compatibilité des Collections utilise `embedding_contract_id`.
-Adaptez les clients qui exigent le champ supprimé et utilisez le SDK `0.3.0`
+Adaptez les clients qui exigent le champ supprimé et utilisez le SDK `0.3.1`
 lors de la mise à niveau du client Python fourni. Lorsqu’une vérification du
 vivant est effectuée, `liveness` contient les champs principaux `status`, `is_live` et
 `live_score`, avec `reason` uniquement pour `input_rejected` ; sinon, ce champ est omis. Consultez les

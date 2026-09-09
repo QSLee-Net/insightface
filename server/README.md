@@ -21,22 +21,23 @@ embeddings, models, and indexes can remain inside your network. It is **not** an
 AWS-compatible replacement and does not implement SigV4, IAM, Region, or AWS
 resource semantics.
 
-Current release: **0.3.0**, Linux x86_64.
+Current release: **0.3.1**, Linux x86_64.
 
 | Runtime | Image |
 | --- | --- |
-| CPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cpu` |
-| NVIDIA GPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cuda12` |
+| CPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cpu` |
+| NVIDIA GPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cuda12` |
 
 The moving `cpu` and `cuda12` tags identify the latest stable release in each
 runtime family. There is no ambiguous `latest` tag. See
 [Maintainer Guide — English](docs/maintainer-guide.md) for the release policy.
 
-**0.3.0 update and upgrade:** Adds `raccoon_s` and `raccoon_l` with support for
-their model manifests, optional liveness with Web model installation, and BMP
-input. Existing deployments can keep their models, configuration, and data
-mounts; liveness remains off unless enabled. API and SDK results no longer
-include `model_version`. See [upgrade steps](docs/user-guide.md#upgrade-to-030).
+**0.3.1 deployment update:** Server and the model installer now run as root,
+with one writable model mount and automatic addon-directory creation on download.
+No host UID/GID or shared-group setup is needed. Update Compose as well as the
+image tag; keep existing models, configuration, and data. Since 0.3.0, Server also
+supports Raccoon manifests, optional liveness, and BMP input; API/SDK results omit
+`model_version`. See [upgrade steps](docs/user-guide.md#upgrade-to-031).
 
 ![InsightFace Server dashboard in English](docs/images/customer/dashboard-en.jpg)
 
@@ -60,7 +61,7 @@ include `model_version`. See [upgrade steps](docs/user-guide.md#upgrade-to-030).
   independent clients, and optional `preview.mjpeg`; closing the browser does
   not stop monitoring.
 - SQLite as the durable source of truth, disposable in-memory exact indexes,
-  read-only base models, writable addon/config directories, persistent `/data`, migrations, health checks, and
+  one writable model mount, a writable configuration directory, persistent `/data`, migrations, health checks, and
   strict CUDA startup validation without silent CPU fallback.
 - JPEG, PNG, WebP, and BMP input; original uploads are not retained by default.
 
@@ -129,19 +130,22 @@ configuration.
 From a complete InsightFace repository checkout, install a model into
 `server/.models`:
 
-Before the first model install or container startup, prepare the host directories from the repository root. The addon directory is required even with liveness disabled; Compose reports an error if it is missing. Shared GID 10001 and setgid allow both the model installer and Server to write there. Repeat the UID/GID exports in each new shell so the installer uses your host user. Base models remain read-only in the running Server.
+Run from the repository root with `server/config/server.toml` present. Server and the model installer run as root (`0:0`). Compose creates `server/.models` if missing and mounts it once at `/models` with write access; `addons/` is created when an addon download is requested. No UID/GID exports or manual addon-directory or permission setup is needed.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml \
   run --rm models install buffalo_l --accept-license
 ```
+
+Optionally install and configure liveness by using this model-install command instead:
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+The Server does not need to be running. On a new deployment, the next `up -d` starts with liveness enabled; if Server is already running, use `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` alone does not reload saved settings. For CUDA, use `compose.cuda12.yml`.
 
 The model tool supports all seven FaceAnalysis packages: `buffalo_l`,
 `buffalo_m`, `buffalo_s`, `buffalo_sc`, `antelopev2`, `raccoon_s`, and

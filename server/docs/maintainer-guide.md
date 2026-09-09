@@ -34,8 +34,10 @@ distribution; the independently installable client is the SDK wheel under
 
 Do not commit model binaries, signed customer licenses, issuer private keys,
 real face images, customer data, generated databases, or production
-configuration. Base models in `/models` are read-only runtime input. The Web liveness installer writes only the nested `/models/addons` mount and the configuration directory; `/data` is mutable,
-persistent runtime state.
+configuration. The model root is one writable `/models` mount. The Web liveness
+installer creates `addons/` on an explicit download and writes the configuration directory;
+it does not switch base model packages. `/data` is mutable, persistent runtime
+state.
 
 ## 2. Source architecture
 
@@ -221,19 +223,38 @@ deployments remain supported; status explains why preparation is unavailable.
 Use the stable `unavailable_code` and error codes for UI localization;
 `unavailable_reason` and backend messages are diagnostic text, not translation
 keys. Render authored Markdown without running interface translation over it.
-Web-enabled deployments mount only the addon subdirectory writable under the
-read-only model root, and mount the whole configuration directory writable so
-atomic replacement is possible. The addon bind mount has `create_host_path: false`:
-operators must create it and grant shared GID 10001 write/setgid permissions
-before the first model install or Server startup, even with liveness disabled.
-The model tool uses the exported host UID/GID plus supplementary GID 10001;
-the Server runs as UID/GID 10001. This prevents Docker from silently creating a
-root-owned addon directory. The initial README/user-guide setup covers these
-permissions; Web configuration writes need the additional configuration-directory
-permissions. Compose forwards download proxies to both services, while the
-Docker health probe uses an explicit proxy-free opener for localhost regardless
+Since 0.3.1, CPU and CUDA images default to root (`0:0`), and both Compose
+services use that identity with Docker's default capabilities. Do not retain a
+`cap_drop: [ALL]` override: root needs the standard file-access capabilities for
+existing host-owned model and data directories. No privileged mode is used.
+The root filesystem remains read-only, with `no-new-privileges` and bounded
+`/tmp`. Root can modify files in the writable mounts; newly downloaded files may
+be root-owned on the host.
+
+Each service has one writable `/models` bind with `create_host_path: true`.
+There is no nested addon bind, host UID/GID export, shared group, or manual addon
+preparation. The installer creates `addons/` only for an explicit addon download
+(including an explicitly configured `addons.auto_download` during model install).
+Normal startup remains offline, and disabled liveness requires no addon directory.
+Both services mount the existing whole configuration directory writable at
+`/etc/insightface` for atomic replacement. The installer no longer uses a read-only
+single-file configuration mount.
+Configuration sources must exist and are not created by Compose. Compose forwards
+download proxies to both services, while the Docker health probe uses an explicit proxy-free opener for localhost regardless
 of `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY`. Web permissions and proxy setup are in the
 [user guide](user-guide.md#web-download-permissions).
+
+`models install <package> --enable-liveness` provides first-install activation
+without a running Server. It checks configuration writability before model work,
+installs and verifies the base package, configured installation addons, and
+liveness, then atomically appends `liveness` to `inference.addons` and
+`addons.auto_download`. Other entries, comments, and settings are preserved.
+Cache hits still apply activation. Download failure leaves configuration
+unchanged; save failure reports an error and exits nonzero, with valid caches
+available for retry. Without the flag, installation does not write configuration;
+`models addons install liveness` remains download-only. The next first startup
+reads the saved configuration; an already running Server requires an explicit
+restart, because `up -d` alone does not reload startup settings.
 
 Every evaluated face has the core fields `status`, `is_live`, and `live_score`.
 Fake is `status=ok` with `is_live=false`. Only insufficient source-image area
@@ -440,9 +461,10 @@ The Server processes sensitive biometric data. Preserve these design rules:
 - no image, embedding, API key, RTSP credential, or multipart-body logging;
 - default-deny CORS, exact trusted origins only;
 - image-byte, decoded-pixel, request-body, image-count, and request-time limits;
-- `/models` read-only, nested `/models/addons` writable for explicit addon downloads, the configuration directory writable for atomic startup-setting saves, and `/data` persistent;
-- non-root UID/GID 10001, read-only root filesystem, dropped capabilities,
-  `no-new-privileges`, bounded `/tmp`;
+- one writable `/models` mount, on-demand addon creation, a writable configuration
+  directory for atomic startup-setting saves, and persistent `/data`;
+- root UID/GID `0:0` with Docker's default capabilities, a read-only root
+  filesystem, `no-new-privileges`, bounded `/tmp`, and no privileged mode;
 - no remote model download during normal startup;
 - authenticated and non-cacheable crop/embedding access;
 - self-hosted UI with CSP and no CDN, analytics, remote font, or third-party JS;
@@ -623,7 +645,7 @@ metadata. A retained source copy, archive, or content digest can help later
 traceability, but no particular snapshot mechanism is required.
 
 ```bash
-export RELEASE_VERSION=0.3.0
+export RELEASE_VERSION=0.3.1
 export RELEASE_IMAGE=ghcr.io/deepinsight/insightface-server
 
 make -C server build-cpu \
@@ -646,8 +668,31 @@ export CPU_IMAGE_ID CUDA_IMAGE_ID
 printf 'CPU image ID: %s\nCUDA image ID: %s\n' "$CPU_IMAGE_ID" "$CUDA_IMAGE_ID"
 ```
 
+Qualify the supplied Compose files with absent model and addon directories, an
+existing configuration directory, and a fresh data volume. Verify automatic
+model-root creation, base-model installation and cache reuse, startup with
+liveness disabled and no addon directory, explicit CLI and Web addon download,
+configuration saving, manual-restart activation, and repeated cache reuse. Test
+`models install <package> --enable-liveness` before the first Server startup,
+including cached models, preserved configuration comments/entries, unavailable
+configuration failing before downloads, download failure leaving configuration
+unchanged, and configuration-save failure returning nonzero. Confirm plain
+installation and `models addons install liveness` do not write configuration.
+Confirm root identity, Docker's default capabilities, one writable model bind,
+and the retained read-only root filesystem and `no-new-privileges`.
+
+Also qualify an upgrade using isolated copies of the previous configuration,
+model files, and data volume. Apply the new Compose settings and all custom
+overrides, rather than changing image tags alone: remove old UID/GID, shared-group,
+`cap_drop: [ALL]`, read-only model-root, nested-addon, and installer read-only
+single-file configuration settings. Both services need the whole existing
+configuration directory mounted writable. Keep the actual
+paths and volume name. Check existing Collections, samples, and search results
+after recreation and restart. Keep backup and rollback instructions aligned with
+the [User Guide](user-guide.md#upgrade-to-031).
+
 Run the CPU image on a Linux x86-64 host and the CUDA image on a compatible
-NVIDIA host with the verified model directory mounted read-only. For both
+NVIDIA host with the verified model directory mounted writable. For both
 variants, check startup, `/v1/health`, `/v1/system`, CRUD/enrollment/search,
 restart persistence, and a private authorized image containing exactly one
 usable face:

@@ -75,60 +75,38 @@ def test_image_healthcheck_bypasses_proxies_and_preserves_failures(
 
 
 @pytest.mark.parametrize("guide", SETUP_GUIDES, ids=lambda path: path.name)
-@pytest.mark.parametrize("existing_addons", [False, True], ids=["empty-checkout", "existing-directory"])
-def test_initial_setup_prepares_addons_before_any_compose_command(
-    tmp_path: Path, guide: Path, existing_addons: bool,
+@pytest.mark.parametrize("existing_models", [False, True], ids=["empty-checkout", "existing-directory"])
+def test_initial_setup_does_not_require_host_permission_changes(
+    tmp_path: Path, guide: Path, existing_models: bool,
 ) -> None:
     markdown = guide.read_text(encoding="utf-8")
     blocks = re.findall(r"```bash\n(.*?)```", markdown, re.DOTALL)
     setup = next(block for block in blocks if "docker compose" in block)
-    assert "mkdir" in setup
-    if existing_addons:
-        directory = tmp_path / "server" / ".models" / "addons"
+    directory = tmp_path / "server" / ".models"
+    if existing_models:
         directory.mkdir(parents=True)
         directory.chmod(0o700)
-        directory.parent.chmod(0o700)
 
-    # Validate actual mkdir/chgrp/chmod and shell exports at the first Docker
-    # invocation. No container or privileged command is run. The one privileged
-    # operation (assigning GID 10001) is mapped to the test user's own group;
-    # its requested shared GID is still checked below.
-    probe = tmp_path / "check_setup.py"
+    # Execute the documented shell block, replacing Docker with a recorder.
+    # Installation now provisions storage through Compose; no host chmod,
+    # chown, supplementary group, or exported user identity may be required.
+    probe = tmp_path / "record_compose.py"
     probe.write_text(
-        """import os
-from pathlib import Path
-root = Path('server/.models')
-addons = root / 'addons'
-assert addons.is_dir(), 'addon bind source must exist before Compose'
-assert root.stat().st_mode & 0o005 == 0o005, 'Server must be able to traverse /models'
-assert addons.stat().st_mode & 0o2070 == 0o2070, 'shared group needs rwx and setgid'
-assert addons.stat().st_gid == os.getgid()
-assert os.environ.get('INSIGHTFACE_MODELS_UID') == str(os.getuid())
-assert os.environ.get('INSIGHTFACE_MODELS_GID') == str(os.getgid())
-assert Path('shared-group-requested').read_text().strip() == '10001'
-temporary = addons / '.write-probe'
-temporary.write_text('synthetic addon')
-assert temporary.stat().st_gid == addons.stat().st_gid
-temporary.unlink()
-print('prepared-before-compose')
-""",
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "assert sys.argv[1] == 'compose'\n"
+        "assert 'INSIGHTFACE_MODELS_UID' not in os.environ\n"
+        "assert 'INSIGHTFACE_MODELS_GID' not in os.environ\n"
+        "assert not Path('server/.models/addons').exists()\n"
+        "with Path('compose-calls.jsonl').open('a') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n",
         encoding="utf-8",
     )
-    script = """umask 077
-sudo() {
-  if [ "$1" = chgrp ]; then
-    test "$2" = 10001
-    printf '%s\\n' "$2" > shared-group-requested
-    shift 2
-    command chgrp "$(id -g)" "$@"
-  else
-    test "$1" = chmod
-    command "$@"
-  fi
-}
-curl() { :; }
-"""
-    script += f"docker() {{ {shlex.quote(sys.executable)} {shlex.quote(str(probe))}; }}\n"
+    script = "umask 077\n"
+    for command in ("sudo", "chmod", "chown", "chgrp", "mkdir", "id"):
+        script += f"{command}() {{ echo 'unexpected host preparation: {command}' >&2; return 1; }}\n"
+    script += "curl() { :; }\n"
+    script += f"docker() {{ {shlex.quote(sys.executable)} {shlex.quote(str(probe))} \"$@\"; }}\n"
     script += setup
     environment = os.environ.copy()
     environment.pop("INSIGHTFACE_MODELS_UID", None)
@@ -138,4 +116,9 @@ curl() { :; }
         capture_output=True, text=True, timeout=20,
     )
     assert result.returncode == 0, f"{guide.name}: {result.stderr}"
-    assert "prepared-before-compose" in result.stdout
+    calls = [json.loads(line) for line in (tmp_path / "compose-calls.jsonl").read_text().splitlines()]
+    assert any("pull" in call for call in calls)
+    assert any("models" in call and "install" in call for call in calls)
+    assert directory.exists() is existing_models
+    if existing_models:
+        assert directory.stat().st_mode & 0o777 == 0o700

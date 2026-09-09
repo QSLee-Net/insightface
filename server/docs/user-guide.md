@@ -18,20 +18,23 @@ Toolkit. Do not install host CUDA, cuDNN, ONNX Runtime, Python, or OpenCV.
 
 CPU example:
 
-Before the first model install or container startup, prepare the host directories from the repository root. The addon directory is required even with liveness disabled; Compose reports an error if it is missing. Shared GID 10001 and setgid allow both the model installer and Server to write there. Repeat the UID/GID exports in each new shell so the installer uses your host user. Base models remain read-only in the running Server.
+Run from the repository root with `server/config/server.toml` present. Server and the model installer run as root (`0:0`). Compose creates `server/.models` if missing and mounts it once at `/models` with write access; `addons/` is created when an addon download is requested. No UID/GID exports or manual addon-directory or permission setup is needed.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+Optionally install and configure liveness by using this model-install command instead:
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+The Server does not need to be running. On a new deployment, the next `up -d` starts with liveness enabled; if Server is already running, use `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` alone does not reload saved settings. For CUDA, use `compose.cuda12.yml`.
 
 For NVIDIA GPU, replace `compose.cpu.yml` with `compose.cuda12.yml` and use port
 `18098`. The model installer shows the model license before download. Public
@@ -60,11 +63,28 @@ not a server failure. Stop with `docker compose ... down` without `-v`; adding
 
 ### Enable and install the model
 
-Liveness is disabled by default in `server/config/server.toml`: both `inference.addons` and `addons.auto_download` are `[]`. Existing configurations that omit these keys also remain disabled. The following is an example for enabling it manually; install the model before restarting:
+Liveness is disabled by default in `server/config/server.toml`: both `inference.addons` and `addons.auto_download` are `[]`. Existing configurations that omit these keys also remain disabled.
 
-In **System → Liveness**, choose **Download and enable after restart**. The Server downloads the published model, verifies its SHA-256, then saves `["liveness"]` in both configuration lists while preserving other settings. A verified cached file is reused. The current process stays unchanged: **manually restart the Server** to enable liveness. Download or configuration errors are shown with a retry action; a failed download does not enable liveness. A downloaded file alone does not activate it.
+**Enable from the command line, including before the first Server startup:**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` first checks that the existing configuration can be updated. It installs and verifies the base package, configured installation addons, and liveness, then adds `liveness` to both `inference.addons` and `addons.auto_download`, preserving other entries, comments, and settings. Verified caches are reused, but the enable setting is still saved on a cache hit. A failed download leaves the configuration unchanged; a configuration-save failure exits with an error and a nonzero status. Successfully cached files can be reused on retry.
+
+Both Compose services mount the whole existing `server/config` directory writable at `/etc/insightface`, with `create_host_path: false`, so the installer can atomically update the host configuration without a running Server. The directory and `server.toml` must exist.
+
+The Server does not need to be running. On a new deployment, the next `up -d` starts with liveness enabled; if Server is already running, use `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` alone does not reload saved settings. For CUDA, use `compose.cuda12.yml`.
+
+Without `--enable-liveness`, `models install` keeps the existing behavior and does not write configuration; the default remains disabled. `models addons install liveness` only downloads/verifies the addon and does not enable it. You can also enable through **System → Liveness** as described below.
+
+In **System → Liveness**, choose **Download and enable after restart**. The Server downloads the published model, verifies its SHA-256, then adds `liveness` to both configuration lists while preserving other entries, comments, and settings. A verified cached file is reused. The current process stays unchanged: **manually restart the Server** to enable liveness. Download or configuration errors are shown with a retry action; a failed download does not enable liveness. A downloaded file alone does not activate it.
 
 System distinguishes verified installation (`installed`), current execution (`enabled`), saved next-start configuration (`configured_enabled`) and pending restart (`restart_required`). Downloading or saving does not change running inference. To disable, save `inference.addons=[]` and `addons.auto_download=[]` in the same file and manually restart. The Web action leaves the enrollment setting unchanged; its default remains `liveness_on_registration=false`.
+
+**Advanced: configure liveness manually.** The following settings are an alternative to the enabling flag or Web action; install the model before restarting.
 
 ```toml
 [inference]
@@ -93,7 +113,7 @@ For CUDA use `compose.cuda12.yml`. The file is stored at
 `/models/addons/liveness.onnx` in the container. All addon models share this flat
 `addons/` directory. The installer verifies the pinned SHA-256 of the
 [published model](https://github.com/deepinsight/insightface-model-addons/releases/download/addons/liveness.onnx).
-Base model mounts remain read-only; the addon subdirectory and configuration directory are writable for Web management. Images contain code and dependencies, not pretrained weights. Upgrading with the default disabled configuration needs no addon download.
+Compose mounts the model root once with write access; addon downloads create its `addons/` subdirectory as needed. The configuration directory is also writable for Web management. Images contain code and dependencies, not pretrained weights. Upgrading with the default disabled configuration needs no addon download.
 
 If an existing deployment enables liveness without installing it, startup fails
 with `addon_model_missing`, the required path and an installation command.
@@ -106,22 +126,27 @@ does not change the recognition model digest or `embedding_contract_id`.
 
 ### Web download permissions
 
-Compose keeps `/models` read-only and mounts only `server/.models/addons` at `/models/addons` writable. Complete the initial directory preparation above before installing models or starting the current Compose files, including when upgrading an existing deployment. For the Web action, also grant the Server user (UID/GID 10001) write access to the whole `server/config` directory mounted at `/etc/insightface`, so it can atomically save `server.toml`. Run from the repository root on Linux:
+The supplied Compose files use a single writable `/models` mount, with
+`create_host_path: true` for both Server and the model installer. They run as
+root (`0:0`) with Docker's default capabilities; no `cap_drop: [ALL]` override
+is applied. The container root filesystem stays read-only, and
+`no-new-privileges` remains enabled. This simplifies shared model access without
+host UID/GID or `chmod 777` setup. Root can modify files in the writable mounts;
+newly downloaded files may be owned by root on the host.
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+Both services mount the whole existing `server/config` directory writable at
+`/etc/insightface` so the Web action and `--enable-liveness` can atomically save
+`server.toml`. Keep this directory and file present; Compose does not create the
+configuration source. For custom deployments, use the actual model/configuration
+paths and equivalent writable directory mounts in both services. Read-only custom
+mounts can serve existing models, but cannot support Web downloads or
+configuration saves.
 
-Use your mounted paths if customized, and `compose.cuda12.yml` for CUDA.
-Old read-only mounts still run with liveness disabled; the Web action explains
-why it is unavailable. You may instead use the CLI installer and edit the
-configuration manually. Do not enable liveness merely because the file exists.
-After a successful Web action, `docker compose -f server/deploy/compose.cpu.yml restart server`
-applies the saved settings. Changing mounts or proxy environment requires
-container recreation. Set `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` before
+Use `compose.cuda12.yml` for CUDA. An existing model file alone does not enable
+liveness. After a successful Web action, run
+`docker compose -f server/deploy/compose.cpu.yml restart server` to apply the saved
+settings. Recreate containers after changing mounts, user, capabilities, or proxy
+environment variables. Set `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` before
 creation if downloads need a proxy; Compose passes them to Server and model tool.
 Use a proxy LAN address reachable from the container; its `127.0.0.1` does not refer to the Mac.
 The action uses existing API-key authentication. Without authentication, users
@@ -309,7 +334,7 @@ matches = client.search("employees", "query.jpg", limit=5)
 
 ## 9. Data, backup and security
 
-- Persist `/data`; keep base models read-only and grant Web management write access only to addons and the configuration directory.
+- Persist `/data`, the writable model root, and the configuration directory. The container root filesystem stays read-only; API authentication still controls Web model-management access.
 - Back up the SQLite database and configured crop storage together while writes are stopped or by using a SQLite-safe snapshot method.
 - API keys are stored as hashes. Supplying a different `INSIGHTFACE_API_KEY` on a later start intentionally rotates the active key for that data volume.
 - Do not log images, embeddings or keys. Keep broad CORS disabled unless required.
@@ -459,7 +484,7 @@ help, require another build and validation.
 Then add `--pull never` to Compose model/install and `up` commands to use the
 local image. Builds use pinned base images and locked dependencies, but require
 network access for those inputs. The public tags are
-`0.3.0-cpu`/`0.3.0-cuda12`; moving `cpu`/`cuda12` tags point to the latest
+`0.3.1-cpu`/`0.3.1-cuda12`; moving `cpu`/`cuda12` tags point to the latest
 stable variant, and there is deliberately no `latest` tag.
 
 Before upgrading, stop writes and create a SQLite-safe snapshot of `/data`
@@ -468,19 +493,36 @@ container against a copy first, check migrations and `/v1/health`, then verify
 the model contract and a known search. Use `docker compose down` without `-v`;
 `docker compose down -v` deletes the named data volume.
 
-### Upgrade to 0.3.0
+### Upgrade to 0.3.1
 
-This version adds `raccoon_s` and `raccoon_l`, support for their model manifests,
-optional liveness, Web addon installation, and BMP image input. Server uses the
-Raccoon detection and recognition models; the package's verifier is not loaded.
+Version 0.3.1 simplifies Docker deployment: both services run as root, use
+Docker's default capabilities, and share one writable model mount. Compose
+creates the model root if missing; explicit addon downloads create `addons/`.
+No host UID/GID or shared-group preparation is required.
 
-**1.** Update the Server source and Compose files to the 0.3.0 version while keeping
+Since 0.3.0, Server supports `raccoon_s` and `raccoon_l` with their model manifests,
+optional liveness, Web addon installation, and BMP input. Server loads Raccoon's
+detector and recognizer, not its verifier. These features and API response
+contracts are unchanged in 0.3.1.
+
+**1.** Update the Server source and Compose files to the 0.3.1 version while keeping
 your `server/config/server.toml` settings and deployment overrides. Preserve
 the existing model path, `/data` volume name, crop storage, ports, and API key
 settings. For custom Compose files, update both the `server` and `models`
-service images to `0.3.0-cpu` or `0.3.0-cuda12` as appropriate. Apply the same
+service images to `0.3.1-cpu` or `0.3.1-cuda12` as appropriate. Apply the same
 Compose files, overrides, and project name you normally use to the commands
 below.
+
+Updating image tags alone is insufficient. Update custom Compose files and
+overrides to set both services to `user: "0:0"`, remove `cap_drop: [ALL]` and
+legacy UID/GID/group settings, mount `/models` once with write access and
+`create_host_path: true`, and remove the separate `/models/addons` mount. Keep
+the container root filesystem read-only and retain `no-new-privileges`. Preserve
+the existing configuration directory and file: both services need the whole
+directory writable for atomic saves. Replace the installer's old read-only
+single-file configuration mount with the directory mount.
+Existing model files and addon caches remain in place; no recursive permission
+reset or addon-directory preparation is required for the standard deployment.
 
 **2.** Pull the new images and recreate the Server container. From the repository
 root, choose the commands for your existing deployment:
@@ -501,13 +543,13 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-If you build locally, build the 0.3.0 images first and use
+If you build locally, build the 0.3.1 images first and use
 `up -d --no-build --pull never --force-recreate server` instead of pulling.
 `docker compose restart` alone does not switch to a new image or apply mount
 changes.
 
 **3.** Startup applies database migrations automatically. Wait for `/v1/health` to
-report `ready` and version `0.3.0`, then check **System** for the expected
+report `ready` and version `0.3.1`, then check **System** for the expected
 model and execution provider. Confirm that your existing Collections and
 people are present and try a known search. Keeping the same model and
 embedding contract preserves samples, embeddings, and Collection contract
@@ -531,10 +573,10 @@ a deployment to use it. Collections must match the new model's embedding
 contract; create compatible Collections and re-enroll, or perform a separate
 data migration. The Web UI does not switch base model packages.
 
-**API and SDK compatibility:** Model, Collection, and FaceSample results no
+**API and SDK compatibility since 0.3.0:** Model, Collection, and FaceSample results no
 longer include `model_version`; model identity uses `model_id`, and Collection
 compatibility uses `embedding_contract_id`. Update clients that require the
-removed field and use SDK `0.3.0` when upgrading the supplied Python client.
+removed field and use SDK `0.3.1` when upgrading the supplied Python client.
 When liveness is evaluated, `liveness` contains the core fields `status`, `is_live`, and
 `live_score`, plus `reason` only for `input_rejected`; it is omitted when not evaluated. See the
 [liveness response and error rules](#detection-recognition-and-errors) before

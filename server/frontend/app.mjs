@@ -1,8 +1,8 @@
-import { ApiClient, ApiError } from "./api.mjs?v=0.3.0-r1";
-import { initializeI18n, locale, setLocale, t, translateTree } from "./i18n.mjs?v=0.3.0-r1";
-import { documentationLink, renderMarkdown } from "./markdown.mjs?v=0.3.0-r1";
-import { renderRejectionList } from "./rejections.mjs?v=0.3.0-r1";
-import { createLivenessManager, livenessErrorText, livenessManagementView, livenessMessage, livenessResultText, livenessRuntimeLabel } from "./liveness.mjs?v=0.3.0-r1";
+import { ApiClient, ApiError } from "./api.mjs?v=0.3.1-r1";
+import { initializeI18n, locale, setLocale, t, translateTree } from "./i18n.mjs?v=0.3.1-r1";
+import { documentationLink, renderMarkdown } from "./markdown.mjs?v=0.3.1-r1";
+import { renderRejectionList } from "./rejections.mjs?v=0.3.1-r1";
+import { createLivenessManager, livenessErrorText, livenessManagementView, livenessMessage, livenessResultText, livenessRuntimeLabel } from "./liveness.mjs?v=0.3.1-r1";
 import {
   applySearchProfileAvailability,
   authenticationEnabledFromHealth,
@@ -16,7 +16,7 @@ import {
   parseExternalEmbeddings,
   parseMetadata,
   searchProfilesFromSystem,
-} from "./core.mjs?v=0.3.0-r1";
+} from "./core.mjs?v=0.3.1-r1";
 
 const client = new ApiClient(window.location.origin);
 const state = {

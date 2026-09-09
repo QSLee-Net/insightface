@@ -3393,7 +3393,7 @@
   "info": {
     "description": "Simple self-hosted face detection, optional liveness checks, comparison, registration, and search. Image upload endpoints accept JPEG, PNG, WebP, and BMP. Liveness is disabled by default in server.toml, including in legacy configurations that omit inference.addons. Use the Web UI to download and enable liveness for the next startup, or set inference.addons = [\"liveness\"] and install the addon manually. Set inference.addons = [] to disable it. Setting addons.auto_download = [\"liveness\"] includes it when running models install <package>, even when the base package is cached. Mode, threshold, compare scope, and registration policy are server configuration, not request parameters. When evaluated, liveness has status, is_live, and live_score. An input_rejected status means the input could not be evaluated, with both values null and an optional reason containing English retry guidance. Older results may omit reason; successful and fake evaluations have only the three core fields. A missing liveness field means no evaluation was performed. In normal mode, failed or rejected liveness blocks recognition; observe mode continues recognition. Registration skips liveness by default. Install the selected addon before starting the Server; startup does not download models.",
     "title": "InsightFace Server",
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "openapi": "3.1.0",
   "paths": {

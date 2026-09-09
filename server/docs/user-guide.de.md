@@ -14,20 +14,23 @@ Für Liveness siehe [Konfiguration, Modellinstallation und Ergebnisse](#optional
 
 CPU benötigt Linux x86_64, Docker Engine und Docker Compose. CUDA benötigt zusätzlich einen kompatiblen NVIDIA-Treiber und NVIDIA Container Toolkit; CUDA, cuDNN, ORT, Python und OpenCV müssen nicht auf dem Host installiert sein.
 
-Bereiten Sie vor der ersten Modellinstallation oder dem Containerstart die Hostverzeichnisse vom Repository-Stamm aus vor. Das Addon-Verzeichnis ist auch bei deaktivierter Liveness erforderlich; fehlt es, meldet Compose einen Fehler. Die gemeinsame GID 10001 und setgid erlauben Installer und Server den Schreibzugriff. Wiederholen Sie die UID/GID-Exporte in jeder neuen Shell, damit der Installer Ihren Hostbenutzer verwendet. Basismodelle bleiben im laufenden Server schreibgeschützt.
+Führen Sie die Befehle im Repository-Stamm aus; `server/config/server.toml` muss vorhanden sein. Server und Modellinstaller laufen als root (`0:0`). Compose erstellt `server/.models`, falls es fehlt, und bindet es einmal schreibbar unter `/models` ein. Das Unterverzeichnis `addons` entsteht erst bei einem Addon-Download. UID/GID-Exporte sowie manuelle Verzeichnis- oder Rechtevorbereitung sind nicht erforderlich. Der normale Serverstart lädt keine Modelle herunter; Liveness ist standardmäßig ausgeschaltet.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+Optional können Sie Liveness bei der Modellinstallation konfigurieren; verwenden Sie dafür stattdessen:
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server muss dafür nicht laufen. Bei einer Neuinstallation aktiviert das nächste `up -d` Liveness; bei einem bereits laufenden Server ist `docker compose -f server/deploy/compose.cpu.yml restart server` erforderlich. `up -d` allein lädt gespeicherte Einstellungen nicht neu. Für CUDA verwenden Sie `compose.cuda12.yml`.
 
 Für GPU verwenden Sie `compose.cuda12.yml` und Port `18098`. Vor dem Download erscheint die Modelllizenz. Öffentliche InsightFace-Modelle sind ohne separate kommerzielle Lizenz nur für nichtkommerzielle Forschung bestimmt.
 
@@ -35,11 +38,28 @@ Die mitgelieferte Compose-Konfiguration deaktiviert Authentifizierung standardm�
 
 ## Optionales Liveness-Addon
 
-Liveness ist in `server/config/server.toml` standardmäßig deaktiviert: `inference.addons` und `addons.auto_download` sind `[]`. Alte Konfigurationen ohne diese Schlüssel bleiben deaktiviert. Das folgende Beispiel aktiviert Liveness manuell; installieren Sie das Modell vor dem Neustart.
+Liveness ist in `server/config/server.toml` standardmäßig deaktiviert: `inference.addons` und `addons.auto_download` sind `[]`. Alte Konfigurationen ohne diese Schlüssel bleiben deaktiviert.
 
-Wählen Sie unter **System → Lebenderkennung** die Aktion **Herunterladen und nach Neustart aktivieren**. Erst nach SHA-256-Prüfung werden beide Listen als `["liveness"]` gespeichert; andere Einstellungen bleiben erhalten. Geprüfte Dateien werden wiederverwendet. **Starten Sie den Server manuell neu**, damit die Änderung wirkt. Fehler sind sichtbar und wiederholbar; fehlgeschlagene Downloads aktivieren Liveness nicht.
+**Über die Kommandozeile aktivieren, auch vor dem ersten Serverstart:**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` prüft zuerst, ob die vorhandene Konfiguration aktualisiert werden kann. Danach installiert und verifiziert es Basispaket, konfigurierte Installations-Addons und Liveness und ergänzt `liveness` in `inference.addons` sowie `addons.auto_download`. Andere Einträge, Kommentare und Einstellungen bleiben erhalten. Geprüfte Caches werden wiederverwendet; auch bei einem Cache-Treffer wird die Aktivierung gespeichert. Ein fehlgeschlagener Download lässt die Konfiguration unverändert. Ein Speicherfehler liefert eine klare Fehlermeldung und einen von null verschiedenen Exit-Status; gültige Caches bleiben für einen erneuten Versuch nutzbar.
+
+Beide Compose-Dienste binden das gesamte vorhandene `server/config` schreibbar unter `/etc/insightface` ein, mit `create_host_path: false`. So aktualisiert der Installer die Hostkonfiguration atomar, ohne dass Server läuft. Verzeichnis und `server.toml` müssen vorhanden sein.
+
+Server muss dafür nicht laufen. Bei einer Neuinstallation aktiviert das nächste `up -d` Liveness; bei einem bereits laufenden Server ist `docker compose -f server/deploy/compose.cpu.yml restart server` erforderlich. `up -d` allein lädt gespeicherte Einstellungen nicht neu. Für CUDA verwenden Sie `compose.cuda12.yml`.
+
+Ohne `--enable-liveness` bleibt `models install` unverändert und schreibt keine Konfiguration; Liveness bleibt standardmäßig deaktiviert. `models addons install liveness` lädt und verifiziert nur das Addon, aktiviert es aber nicht. Alternativ können Sie unten **System → Lebenderkennung** verwenden.
+
+Wählen Sie unter **System → Lebenderkennung** die Aktion **Herunterladen und nach Neustart aktivieren**. Erst nach SHA-256-Prüfung wird `liveness` beiden Listen hinzugefügt; andere Einträge, Kommentare und Einstellungen bleiben erhalten. Geprüfte Dateien werden wiederverwendet. **Starten Sie den Server manuell neu**, damit die Änderung wirkt. Fehler sind sichtbar und wiederholbar; fehlgeschlagene Downloads aktivieren Liveness nicht.
 
 System zeigt die geprüfte Installation (`installed`), den aktuellen Betrieb (`enabled`), die gespeicherte Einstellung für den nächsten Start (`configured_enabled`) und den Neustartbedarf (`restart_required`) getrennt. Download und Speichern ändern die laufende Inferenz noch nicht. Zum Deaktivieren setzen Sie in derselben Datei `inference.addons=[]` und `addons.auto_download=[]` und starten manuell neu. Die Web-Aktion ändert die Registrierungseinstellung nicht; deren Standard bleibt `liveness_on_registration=false`.
+
+**Erweitert: Liveness manuell konfigurieren.** Diese Einstellungen ersetzen das Aktivierungsflag oder die Web-Aktion; installieren Sie das Modell vor dem Neustart.
 
 ```toml
 [inference]
@@ -67,14 +87,9 @@ Ein aktiviertes, fehlendes Modell stoppt den Start mit `addon_model_missing`; ei
 
 ### Mounts und Berechtigungen für Web-Downloads
 
-Compose hält `/models` schreibgeschützt und bindet nur `server/.models/addons` schreibbar unter `/models/addons` ein. Führen Sie vor Modellinstallation oder Start mit den aktuellen Compose-Dateien die anfängliche Verzeichnisvorbereitung oben durch, auch bei Upgrades bestehender Installationen. Für die Web-Aktion benötigt der Server-Benutzer (UID/GID 10001) zusätzlich Schreibzugriff auf das gesamte unter `/etc/insightface` eingebundene Verzeichnis `server/config`, um `server.toml` atomar zu speichern. Unter Linux vom Repository-Stamm aus:
+Die mitgelieferten Compose-Dateien binden das gesamte `/models` schreibbar ein; ein separates Mount für `/models/addons` ist nicht nötig. Server und Installer verwenden root (`0:0`), und die Installation erstellt `addons` bei Bedarf. Das gesamte vorhandene Verzeichnis `server/config` wird in beiden Diensten schreibbar unter `/etc/insightface` eingebunden, damit die Web-Aktion und `--enable-liveness` `server.toml` atomar speichern können. Mit diesen Vorgaben sind keine UID/GID-Exporte, `chgrp`- oder `chmod`-Schritte erforderlich. Bewusst schreibgeschützte Dateien oder Mounts verhindern weiterhin die Web-Verwaltung; prüfen Sie bei eigenen Mounts die Zugriffsrechte.
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+Das Modell-Mount verwendet in beiden Diensten `create_host_path: true`. Die Dienste behalten die Docker-Standard-Capabilities; `cap_drop: [ALL]` wird nicht gesetzt. Das übrige Container-Dateisystem bleibt schreibgeschützt und `no-new-privileges` aktiv. Root kann Dateien in schreibbaren Mounts ändern; neue Downloads können auf dem Host root gehören.
 
 Bei eigenen Mounts verwenden Sie deren tatsächliche Hostpfade; für CUDA nehmen Sie `compose.cuda12.yml`. Alte schreibgeschützte Mounts funktionieren weiterhin bei deaktivierter Liveness. Ist die Web-Aktion nicht verfügbar, zeigt sie den Grund; alternativ können Sie das Modell per CLI installieren und die Konfiguration selbst bearbeiten. Nach erfolgreichem Speichern im Web übernimmt `docker compose -f server/deploy/compose.cpu.yml restart server` die Änderung. Änderungen an Mounts oder Proxy-Variablen erfordern eine Neuerstellung des Containers.
 
@@ -167,7 +182,7 @@ Mit Liveness in `normal` erhalten blockierte Gesichter `status: liveness_blocked
 
 ## 6. Daten, Backup und Sicherheit
 
-Persistieren Sie `/data` und halten Sie die Basismodelle unter `/models` schreibgeschützt. Schreibzugriff für die Web-Verwaltung gilt nur für `/models/addons` und das Konfigurationsverzeichnis. Sichern Sie SQLite und optional gespeicherte Gesichtsbilder gemeinsam vor Massenänderungen. API Keys werden gehasht; ein neuer `INSIGHTFACE_API_KEY` beim Start mit demselben Volume rotiert den aktiven Key. Bilder, Embeddings und Keys gehören nicht in Logs.
+Persistieren und sichern Sie `/data`, das Modellverzeichnis und die Konfiguration. Das mitgelieferte Deployment verwendet root mit den Docker-Standard-Capabilities und einem schreibbaren `/models`; dadurch kann der Dienst die eingebundenen Modelle, Konfiguration und Daten ändern. Das übrige Container-Dateisystem bleibt schreibgeschützt und `no-new-privileges` bleibt aktiv; `privileged` ist nicht erforderlich. Beschränken Sie Docker- und Hostzugriff und binden Sie keine fremden Hostverzeichnisse ein. Sichern Sie SQLite und optional gespeicherte Gesichtsbilder gemeinsam vor Massenänderungen. API Keys werden gehasht; ein neuer `INSIGHTFACE_API_KEY` beim Start mit demselben Volume rotiert den aktiven Key. Bilder, Embeddings und Keys gehören nicht in Logs.
 
 Der OpenAPI-Schema-Explorer für Entwickler liegt unter `/docs`; aufgabenbezogene API-Anleitungen stehen in dieser Hilfe. Nennen Sie bei Fehlern `x-request-id`. Prüfen Sie bei `401` den Key, bei `409 collection_model_mismatch` den Modellvertrag und bei `422 face_not_found` das Eingabebild.
 
@@ -254,27 +269,30 @@ oder mitgelieferter Benutzerhilfe, erfordern einen neuen Build und eine erneute
 Validierung.
 
 Für lokale Images verwenden Compose-Befehle `--pull never`. Unveränderliche
-Tags sind `0.3.0-cpu` und `0.3.0-cuda12`; `cpu` und `cuda12` zeigen auf die
+Tags sind `0.3.1-cpu` und `0.3.1-cuda12`; `cpu` und `cuda12` zeigen auf die
 jeweils neueste stabile Variante, ein `latest` gibt es absichtlich nicht.
 Vor einem Upgrade Schreibzugriffe stoppen und `/data` samt Crop-Speicher
 SQLite-sicher sichern. `docker compose down -v` nicht verwenden, weil es das
 Datenvolume löscht.
 
-### Upgrade auf 0.3.0
+### Upgrade auf 0.3.1
 
-Diese Version ergänzt `raccoon_s` und `raccoon_l`, die Unterstützung ihrer
-Modell-Manifeste, optionale Lebenderkennung, die Installation von Addons über
-die Web UI und BMP-Eingaben. Der Server nutzt Raccoons Modelle für Detektion
-und Erkennung; der Verifier des Pakets wird nicht geladen.
+0.3.1 vereinfacht das Deployment: Server und Modellinstaller laufen als root, Compose erstellt das Modellverzeichnis bei Bedarf, und ein einzelnes schreibbares `/models` ersetzt das separate Addon-Mount.
 
-**1.** Aktualisieren Sie den Server-Quellcode und die Compose-Dateien auf 0.3.0,
+Seit 0.3.0 werden `raccoon_s`, `raccoon_l`, ihre Modell-Manifeste, optionale Liveness, Web-Installation von Addons und BMP-Eingaben unterstützt. Der Server nutzt Raccoons Detektion und Erkennung; der Verifier wird nicht geladen. Diese Funktionen und API-Antwortverträge bleiben in 0.3.1 unverändert.
+
+**1.** Aktualisieren Sie den Server-Quellcode und die Compose-Dateien auf 0.3.1,
 behalten Sie dabei Ihre Einstellungen in `server/config/server.toml` und
 Ihre Deployment-Overrides. Erhalten Sie den bisherigen Modellpfad, den
 Namen des `/data`-Volumes, den Crop-Speicher, die Ports und die Einstellungen
 für den API Key. Setzen Sie bei eigenen Compose-Dateien die Images beider
-Dienste `server` und `models` passend zur Umgebung auf `0.3.0-cpu` oder
-`0.3.0-cuda12`. Verwenden Sie für die folgenden Befehle dieselben
+Dienste `server` und `models` passend zur Umgebung auf `0.3.1-cpu` oder
+`0.3.1-cuda12`. Verwenden Sie für die folgenden Befehle dieselben
 Compose-Dateien, Overrides und denselben Projektnamen wie bisher.
+
+Aktualisieren Sie vor dem Start auch eigene Compose-Overrides, nicht nur die Image-Tags: Beide Dienste benötigen `user: "0:0"`, ohne `cap_drop: [ALL]` und ohne die bisherigen UID/GID- oder `group_add`-Vorgaben. Verwenden Sie für beide Dienste ein einziges schreibbares Modell-Bind-Mount unter `/models` mit `create_host_path: true`; entfernen Sie das separate `/models/addons`-Mount und `x-addons-path`. Behalten Sie den tatsächlichen Modellpfad und vorhandene Dateien einschließlich Addons. Konfigurations-Mounts verwenden weiterhin `create_host_path: false`, daher müssen `server/config` und `server.toml` vorhanden bleiben. Behalten Sie das Datenvolume und erstellen Sie vor der Umstellung eine Sicherung von Daten, Modellen und Konfiguration. Entfernen Sie root- oder mountbezogene Altwerte aus eigenen Overrides; ein neues Image allein übernimmt diese Änderungen nicht.
+
+Behalten Sie das schreibgeschützte Container-Dateisystem und `no-new-privileges` bei. Beide Dienste benötigen das gesamte Konfigurationsverzeichnis schreibbar. Ersetzen Sie das bisherige schreibgeschützte Einzeldatei-Mount des Installers durch das Verzeichnis-Mount. Für das Standarddeployment sind weder eine rekursive Änderung bestehender Dateirechte noch die Vorbereitung eines Addon-Verzeichnisses erforderlich.
 
 **2.** Laden Sie die neuen Images und erstellen Sie den Server-Container neu.
 Wählen Sie im Repository-Stamm die Befehle für Ihr bestehendes Deployment:
@@ -295,13 +313,13 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-Bei einem lokalen Build bauen Sie zuerst die 0.3.0-Images und verwenden
+Bei einem lokalen Build bauen Sie zuerst die 0.3.1-Images und verwenden
 `up -d --no-build --pull never --force-recreate server`, statt Images
 herunterzuladen. `docker compose restart` allein wechselt weder auf ein
 neues Image noch übernimmt es geänderte Mounts.
 
 **3.** Beim Start werden die Datenbankmigrationen automatisch angewendet. Warten
-Sie, bis `/v1/health` den Status `ready` und die Version `0.3.0` meldet, und
+Sie, bis `/v1/health` den Status `ready` und die Version `0.3.1` meldet, und
 prüfen Sie unter **System** das erwartete Modell und den Ausführungsprovider.
 Kontrollieren Sie, dass Ihre bestehenden Collections und Personen vorhanden
 sind, und führen Sie eine bekannte Suche aus. Bei unverändertem Modell und
@@ -330,11 +348,11 @@ müssen zum Embedding-Vertrag des neuen Modells passen. Erstellen Sie passende
 Collections und registrieren Sie die Personen erneut, oder führen Sie eine
 separate Datenmigration durch. Die Web UI wechselt keine Basismodellpakete.
 
-**API- und SDK-Kompatibilität:** Ergebnisse für Modelle, Collections und
+**API- und SDK-Kompatibilität seit 0.3.0:** Ergebnisse für Modelle, Collections und
 FaceSamples enthalten kein `model_version` mehr. `model_id` identifiziert das
 Modell, `embedding_contract_id` bestimmt die Collection-Kompatibilität.
 Aktualisieren Sie Clients, die das entfernte Feld voraussetzen, und verwenden
-Sie beim Upgrade des mitgelieferten Python-Clients das SDK `0.3.0`. Wird
+Sie beim Upgrade des mitgelieferten Python-Clients das SDK `0.3.1`. Wird
 Liveness ausgewertet, enthält `liveness` die Kernfelder `status`, `is_live` und
 `live_score`, bei `input_rejected` zusätzlich `reason`; ohne Auswertung fehlt das Feld. Lesen Sie vor der Aktivierung
 für Erkennungsanfragen die [Liveness-Ergebnisse und Fehlerregeln](#liveness-ergebnisse).

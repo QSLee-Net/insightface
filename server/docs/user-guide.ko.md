@@ -14,20 +14,23 @@
 
 CPU 버전에는 Linux x86_64, Docker Engine, Docker Compose가 필요합니다. CUDA 버전에는 호환 NVIDIA Driver와 NVIDIA Container Toolkit도 필요하지만 호스트 CUDA, cuDNN, ORT, Python, OpenCV는 설치하지 않아도 됩니다.
 
-첫 모델 설치나 컨테이너 시작 전에 저장소 루트에서 호스트 디렉터리를 준비하세요. 생체 감지가 꺼져 있어도 addon 디렉터리는 필수이며, 없으면 Compose가 오류를 반환합니다. 공유 GID 10001과 setgid 권한으로 모델 설치 도구와 Server 모두 이 디렉터리에 쓸 수 있습니다. 새 셸을 열 때마다 UID/GID를 다시 내보내 설치 도구가 현재 호스트 사용자로 실행되도록 하세요. 실행 중인 Server에서 기본 모델은 계속 읽기 전용입니다.
+저장소 루트에서 실행하고 `server/config/server.toml`을 준비하세요. Server와 모델 설치 도구는 root(`0:0`)로 실행됩니다. Compose는 `server/.models`가 없으면 생성하고 하나의 쓰기 가능한 `/models`로 마운트합니다. `addons/`는 addon 다운로드를 요청할 때 생성됩니다. UID/GID 내보내기, addon 디렉터리 수동 생성이나 권한 설정은 필요하지 않습니다.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+모델을 설치하면서 라이브니스도 설정하려면 대신 다음 설치 명령을 사용하세요.
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server를 먼저 실행할 필요는 없습니다. 새 배포는 다음 `up -d`에서 라이브니스가 활성화됩니다. 이미 실행 중이면 `docker compose -f server/deploy/compose.cpu.yml restart server`가 필요하며, `up -d`만으로는 저장된 설정을 다시 읽지 않습니다. CUDA는 `compose.cuda12.yml`을 사용하세요.
 
 GPU는 `compose.cuda12.yml`과 포트 `18098`을 사용합니다. 설치 전 모델 라이선스가 표시되며, 별도 상용 라이선스가 없으면 공개 InsightFace 모델은 비상업 연구용으로만 사용할 수 있습니다.
 
@@ -35,11 +38,28 @@ GPU는 `compose.cuda12.yml`과 포트 `18098`을 사용합니다. 설치 전 모
 
 ## 선택적 라이브니스 addon
 
-`server/config/server.toml`의 라이브니스는 기본적으로 꺼져 있습니다. `inference.addons`와 `addons.auto_download`는 모두 `[]`이며 키가 없는 이전 설정도 비활성 상태를 유지합니다. 아래는 수동 활성화 예시입니다. 다시 시작하기 전에 모델을 설치하세요.
+`server/config/server.toml`의 라이브니스는 기본적으로 꺼져 있습니다. `inference.addons`와 `addons.auto_download`는 모두 `[]`이며 키가 없는 이전 설정도 비활성 상태를 유지합니다.
 
-**시스템 → 라이브니스 검사**에서 **다운로드하고 다시 시작 후 활성화**를 선택하세요. SHA-256 검증 후 두 목록을 `["liveness"]`로 저장하고 다른 설정은 보존합니다. 검증된 파일은 재사용합니다. 현재 실행 상태는 그대로이며 **Server를 수동으로 다시 시작**해야 적용됩니다. 오류 시 재시도할 수 있고 다운로드 실패로 활성화되지 않습니다.
+**명령줄에서 활성화하기: Server를 처음 시작하기 전에도 가능합니다.**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness`는 먼저 기존 설정을 업데이트할 수 있는지 검사합니다. 기본 패키지, 설치 설정에 지정된 addons와 라이브니스 모델을 설치·검증한 뒤 `inference.addons`와 `addons.auto_download`에 `liveness`를 추가하고 다른 항목, 주석과 설정을 보존합니다. 검증된 캐시를 재사용해도 활성화 설정을 저장합니다. 다운로드 실패 시 설정은 바뀌지 않으며, 설정 저장 실패는 명확한 오류와 0이 아닌 종료 상태를 반환합니다. 유효한 캐시는 재시도 시 재사용할 수 있습니다.
+
+두 Compose 서비스는 기존 `server/config` 전체를 `/etc/insightface`에 쓰기 가능하게 마운트하고 `create_host_path: false`를 유지합니다. 따라서 Server가 실행되지 않아도 설치 도구가 호스트 설정을 원자적으로 갱신할 수 있습니다. 디렉터리와 `server.toml`은 있어야 합니다.
+
+Server를 먼저 실행할 필요는 없습니다. 새 배포는 다음 `up -d`에서 라이브니스가 활성화됩니다. 이미 실행 중이면 `docker compose -f server/deploy/compose.cpu.yml restart server`가 필요하며, `up -d`만으로는 저장된 설정을 다시 읽지 않습니다. CUDA는 `compose.cuda12.yml`을 사용하세요.
+
+`--enable-liveness`를 지정하지 않으면 `models install`은 기존 동작을 유지하고 설정을 쓰지 않으며 기본 라이브니스는 꺼져 있습니다. `models addons install liveness`는 다운로드와 검증만 하며 활성화하지 않습니다. 아래의 **시스템 → 라이브니스 검사**에서도 활성화할 수 있습니다.
+
+**시스템 → 라이브니스 검사**에서 **다운로드하고 다시 시작 후 활성화**를 선택하세요. SHA-256 검증 후 두 목록에 `liveness`를 추가하고 다른 항목, 주석과 설정은 보존합니다. 검증된 파일은 재사용합니다. 현재 실행 상태는 그대로이며 **Server를 수동으로 다시 시작**해야 적용됩니다. 오류 시 재시도할 수 있고 다운로드 실패로 활성화되지 않습니다.
 
 시스템은 검증된 설치 상태(`installed`), 현재 실행 상태(`enabled`), 다음 시작에 적용할 저장 설정(`configured_enabled`), 재시작 필요 여부(`restart_required`)를 따로 표시합니다. 다운로드하거나 저장해도 현재 추론은 바뀌지 않습니다. 끄려면 같은 파일에 `inference.addons=[]`와 `addons.auto_download=[]`를 저장하고 수동으로 다시 시작하세요. Web 작업은 등록 설정을 바꾸지 않으며 기본값은 `liveness_on_registration=false`입니다.
+
+**고급 사용: 수동 설정.** 다음 설정은 활성화 플래그나 Web 작업의 대안입니다. 다시 시작하기 전에 모델을 설치하세요.
 
 ```toml
 [inference]
@@ -67,16 +87,23 @@ docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
 
 ### Web 다운로드를 위한 마운트와 권한
 
-Compose는 `/models`를 읽기 전용으로 유지하고 `server/.models/addons`만 `/models/addons`에 쓰기 가능하게 마운트합니다. 기존 배포를 업그레이드할 때도 현재 Compose 파일로 모델을 설치하거나 시작하기 전에 위의 초기 디렉터리 준비를 완료하세요. Web 작업에는 Server 사용자(UID/GID 10001)가 `/etc/insightface`에 마운트된 `server/config` 전체에 쓸 수 있는 권한도 필요합니다. 이 권한으로 `server.toml`을 원자적으로 저장합니다. Linux의 저장소 루트에서 실행하세요.
+표준 Compose는 Server와 모델 설치 도구에 하나의 쓰기 가능한 `/models` 마운트를
+제공하고 `create_host_path: true`를 설정합니다. 두 서비스는 root(`0:0`)와 Docker 기본
+capabilities로 실행되며 `cap_drop: [ALL]`은 설정하지 않습니다. 컨테이너 루트 파일시스템은
+읽기 전용으로 유지하고 `no-new-privileges`도 유지합니다. 호스트 UID/GID나 `chmod 777`
+설정은 필요하지 않습니다. root는 쓰기 가능한 마운트의 파일을 변경할 수 있으며 새로 다운로드한
+파일의 호스트 소유자가 root가 될 수 있습니다.
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+두 서비스 모두 기존 `server/config` 전체를 `/etc/insightface`에 쓰기 가능하게 마운트하여
+Web 작업과 `--enable-liveness`가 `server.toml`을 원자적으로 저장합니다. 이 디렉터리와 파일은
+있어야 하며 Compose는 설정 원본을 자동 생성하지 않습니다. 사용자 지정 배포는 실제 경로를
+사용하고 두 서비스 모두에 동일한 쓰기 가능한 디렉터리 마운트를 제공하세요. 사용자 지정 읽기 전용
+마운트는 기존 모델 추론에는 사용할 수 있지만 Web 다운로드나 설정 저장에는 사용할 수 없습니다.
 
-사용자 지정 배포는 실제 마운트 경로로 바꾸고 CUDA는 `compose.cuda12.yml`을 사용합니다. 기존 읽기 전용 마운트도 라이브니스가 꺼진 상태에서는 계속 사용할 수 있습니다. Web 작업을 사용할 수 없는 이유가 표시되면 CLI로 모델을 설치하고 설정을 직접 편집할 수도 있습니다. Web 저장 후 `docker compose -f server/deploy/compose.cpu.yml restart server`로 적용하세요. 마운트나 프록시 환경 변수를 바꾸면 컨테이너를 다시 생성해야 합니다.
+CUDA는 `compose.cuda12.yml`을 사용합니다. 파일이 있다고 라이브니스가 자동으로 켜지지는
+않습니다. Web 저장 후 `docker compose -f server/deploy/compose.cpu.yml restart server`로
+적용하세요. 마운트, 실행 사용자, capabilities나 프록시 환경 변수를 바꾸면 컨테이너를 다시
+생성해야 합니다.
 
 다운로드에 프록시가 필요하면 컨테이너 생성 전에 `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`를 설정하세요. Compose가 Server와 모델 도구 모두에 전달합니다. 컨테이너에서 접근 가능한 LAN 주소를 사용하세요. 컨테이너의 `127.0.0.1`은 Mac이 아닙니다. 이 작업은 기존 API Key 인증을 사용하며, 인증이 꺼져 있으면 API에 접근 가능한 사용자도 실행할 수 있습니다. 고정된 공개 라이브니스 모델만 다운로드하며 임의 URL 입력이나 기본 모델 패키지 전환은 제공하지 않습니다.
 
@@ -166,7 +193,7 @@ Monitor는 브라우저와 독립적으로 실행되고 활성 작업은 서버 
 
 ## 6. 데이터와 보안
 
-`/data`를 영속화하고 `/models`의 기본 모델은 읽기 전용으로 유지합니다. Web 관리는 `/models/addons`와 설정 디렉터리에만 씁니다. 대량 작업 전 SQLite와 face crop 영역을 함께 백업하세요. Key는 hash로 저장되며 같은 volume을 다른 `INSIGHTFACE_API_KEY`로 시작하면 활성 Key가 교체됩니다. 이미지, embedding, Key를 로그에 남기지 마세요.
+`/data`, 쓰기 가능한 모델 루트와 설정 디렉터리를 영속화합니다. 컨테이너 루트 파일시스템은 읽기 전용이며 Web 모델 관리는 기존 API 인증을 적용합니다. 대량 작업 전 SQLite와 face crop 영역을 함께 백업하세요. Key는 hash로 저장되며 같은 volume을 다른 `INSIGHTFACE_API_KEY`로 시작하면 활성 Key가 교체됩니다. 이미지, embedding, Key를 로그에 남기지 마세요.
 
 개발자용 OpenAPI 스키마 탐색기는 `/docs`에 있으며 작업 중심 API 안내는 이 도움말에 있습니다. 문제 보고 시 `x-request-id`를 포함하세요. `401`은 Key, `409 collection_model_mismatch`는 모델 계약, `422 face_not_found`는 사용 가능한 얼굴을 확인합니다.
 
@@ -250,22 +277,36 @@ make -C server build-cuda12
 검증해야 합니다.
 
 로컬 이미지를 쓸 때 Compose에 `--pull never`를 추가합니다. 고정 Tag는
-`0.3.0-cpu`, `0.3.0-cuda12`이고 이동 Tag `cpu`, `cuda12`는 최신 안정 버전을
+`0.3.1-cpu`, `0.3.1-cuda12`이고 이동 Tag `cpu`, `cuda12`는 최신 안정 버전을
 가리키며 `latest`는 없습니다. 업그레이드 전 쓰기를 중지하고 `/data`와 crop을
 SQLite-safe 방식으로 백업하세요. `docker compose down -v`는 데이터 Volume을
 삭제하므로 사용하지 마세요.
 
-### 0.3.0으로 업그레이드
+### 0.3.1으로 업그레이드
 
-이 버전에는 `raccoon_s`, `raccoon_l` 및 해당 모델 설명 파일 지원, 선택적 라이브니스 검사,
-Web 추가 모델 설치, BMP 이미지 입력이 추가되었습니다. Server는 Raccoon의 검출·인식 모델을
-사용하며 패키지의 verifier는 로드하지 않습니다.
+0.3.1은 Docker 배포를 간소화합니다. 두 서비스가 root와 Docker 기본 capabilities로
+실행되며 하나의 쓰기 가능한 모델 마운트를 공유합니다. 모델 루트가 없으면 Compose가
+생성하고 명시적인 addon 다운로드 시 `addons/`를 만듭니다. 호스트 UID/GID나 공유 그룹을
+준비할 필요가 없습니다.
+
+0.3.0부터 `raccoon_s`, `raccoon_l` 및 모델 설명 파일, 선택적 라이브니스, Web addon
+설치와 BMP 입력을 지원합니다. Server는 Raccoon의 검출·인식 모델만 사용하고 verifier는
+로드하지 않습니다. 0.3.1에서는 이 기능과 API 응답 계약을 변경하지 않습니다.
 
 **1.** `server/config/server.toml` 설정과 배포별 재정의 설정을 유지하면서 Server 소스와
-Compose 파일을 0.3.0으로 업데이트합니다. 기존 모델 경로, `/data` 볼륨 이름, 얼굴 이미지
+Compose 파일을 0.3.1으로 업데이트합니다. 기존 모델 경로, `/data` 볼륨 이름, 얼굴 이미지
 저장소, 포트와 API 키 설정을 유지하세요. 사용자 정의 Compose 파일은 `server`와 `models`
-두 서비스의 이미지를 환경에 맞게 `0.3.0-cpu` 또는 `0.3.0-cuda12`로 변경합니다.
+두 서비스의 이미지를 환경에 맞게 `0.3.1-cpu` 또는 `0.3.1-cuda12`로 변경합니다.
 아래 명령에도 평소 사용하는 Compose 파일, 재정의 설정과 프로젝트 이름을 적용하세요.
+
+이미지 태그만 바꾸면 충분하지 않습니다. 사용자 지정 Compose와 재정의 파일도 갱신하여
+두 서비스를 `user: "0:0"`으로 설정하고 `cap_drop: [ALL]`과 이전 UID/GID 및 공유 그룹
+설정을 제거하세요. `/models`는 `create_host_path: true`인 하나의 쓰기 가능한 마운트로
+통합하고 별도 `/models/addons` 마운트를 제거합니다. 루트 파일시스템 읽기 전용과
+`no-new-privileges`는 유지합니다. 기존 설정 디렉터리와 파일도 보존하세요. 두 서비스 모두
+원자적 설정 저장을 위해 전체 디렉터리에 쓸 수 있어야 합니다. 설치 도구의 기존 읽기 전용
+단일 파일 마운트를 디렉터리 마운트로 교체하세요. 기존 모델과 addon 캐시는 그대로 유지되며 표준 배포에서는 재귀적 권한 변경이나
+addon 디렉터리 사전 준비가 필요하지 않습니다.
 
 **2.** 새 이미지를 내려받고 Server 컨테이너를 다시 생성합니다. 저장소 루트에서 기존 배포에
 맞는 명령을 선택하세요.
@@ -286,12 +327,12 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-로컬에서 빌드한다면 먼저 0.3.0 이미지를 빌드하고, 이미지를 내려받는 대신
+로컬에서 빌드한다면 먼저 0.3.1 이미지를 빌드하고, 이미지를 내려받는 대신
 `up -d --no-build --pull never --force-recreate server`를 사용합니다.
 `docker compose restart`만으로는 새 이미지로 바뀌거나 마운트 변경이 적용되지 않습니다.
 
 **3.** 시작 시 데이터베이스 마이그레이션이 자동으로 적용됩니다. `/v1/health`에서 `ready`와
-버전 `0.3.0`을 반환할 때까지 기다린 뒤 **시스템**에서 모델과 실행 공급자가 예상과
+버전 `0.3.1`을 반환할 때까지 기다린 뒤 **시스템**에서 모델과 실행 공급자가 예상과
 같은지 확인합니다. 기존 Collection과 사람이 남아 있는지 확인하고, 결과를 알고 있는
 이미지로 검색하세요. 같은 모델과 특징 계약을 유지하면 샘플, 특징 벡터와 Collection
 계약 ID가 보존되므로 다시 등록할 필요가 없습니다.
@@ -313,10 +354,10 @@ curl -fsS http://127.0.0.1:18098/v1/health
 호환되는 Collection을 만들고 다시 등록하거나 별도의 데이터 마이그레이션을 진행하세요.
 Web UI에서는 기본 모델 패키지를 전환할 수 없습니다.
 
-**API와 SDK 호환성:** 모델, Collection, FaceSample 결과에서 `model_version`이 제거됩니다.
+**0.3.0 이후 API와 SDK 호환성:** 모델, Collection, FaceSample 결과에서 `model_version`이 제거됩니다.
 모델은 `model_id`로 식별하며 Collection 호환성은 `embedding_contract_id`로 확인합니다.
 제거된 필드를 필수로 사용하는 클라이언트를 수정하고, 제공되는 Python 클라이언트를 업데이트할
-때는 SDK `0.3.0`을 사용하세요. 라이브니스를 평가한 경우 `liveness`에는 `status`, `is_live`,
+때는 SDK `0.3.1`을 사용하세요. 라이브니스를 평가한 경우 `liveness`에는 `status`, `is_live`,
 `live_score` 세 핵심 필드가 포함되고 `input_rejected`에만 `reason`이 추가됩니다. 평가하지 않았다면 `liveness` 자체를 생략합니다.
 인식 요청에 활성화하기 전에 [라이브니스 결과와 오류 처리](#라이브니스-결과)를 확인하세요.
 

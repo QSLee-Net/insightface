@@ -378,7 +378,7 @@ def download_archive(package: ModelPackage, destination: Path) -> None:
                 package.url,
                 stream=True,
                 timeout=(15, 300),
-                headers={"User-Agent": "InsightFace-Server-Model-Installer/0.3.0"},
+                headers={"User-Agent": "InsightFace-Server-Model-Installer/0.3.1"},
             )
             response.raise_for_status()
             declared = response.headers.get("Content-Length")

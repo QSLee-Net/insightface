@@ -82,19 +82,18 @@ COPY --from=native-search-builder \
      /build/native-search/cpu/libifs_search_cpu.so.2.0.0 \
      /opt/insightface/server/native/lib/libifs_search_cpu.so
 
-RUN groupadd --gid 10001 insightface \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
-       --shell /usr/sbin/nologin insightface \
-    && install -d -o insightface -g insightface -m 0750 /data \
-    && install -d -o root -g insightface -m 0550 /models \
-    && chown -R root:insightface /opt/insightface \
+# Runtime and model installation share root inside the container. Model and
+# data mounts are writable; Compose keeps the rest of the filesystem read-only.
+RUN install -d -o root -g root -m 0750 /data \
+    && install -d -o root -g root -m 0755 /models \
+    && chown -R root:root /opt/insightface \
     && chmod -R u=rwX,g=rX,o= /opt/insightface
 
-ARG INSIGHTFACE_SERVER_VERSION=0.3.0
+ARG INSIGHTFACE_SERVER_VERSION=0.3.1
 LABEL org.opencontainers.image.version="${INSIGHTFACE_SERVER_VERSION}"
 
 WORKDIR /opt/insightface/server
-USER 10001:10001
+USER 0:0
 
 VOLUME ["/data"]
 EXPOSE 8080

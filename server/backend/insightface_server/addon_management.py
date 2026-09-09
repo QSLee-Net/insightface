@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
-import os
-import stat
-import tempfile
 import threading
-from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import tomlkit
 from fastapi import Request
-from tomlkit.items import Array
 
+from .addon_config import (
+    AddonConfigError,
+    editable_config_error,
+    liveness_config_lock,
+    writable,
+    write_enabled_addons,
+)
 from .addons import install_addon
 from .config import Settings, load_server_config
 from .errors import ApiError
@@ -46,33 +46,6 @@ def require_management_request(request: Request, cors_origins: tuple[str, ...]) 
     same_origin = source.netloc == request.url.netloc and source.scheme == request.url.scheme
     if not valid_origin or (not same_origin and origin not in cors_origins and "*" not in cors_origins):
         raise ApiError("origin_not_allowed", "This origin may not change Server configuration.", 403)
-
-
-def _writable(path: Path, *, directory: bool = False) -> bool:
-    try:
-        mode = path.stat().st_mode
-        # Check permission bits too: tests or a root container must not mistake
-        # a deliberately read-only file for a supported editable deployment.
-        return bool(mode & 0o222) and os.access(path, os.W_OK | (os.X_OK if directory else 0))
-    except OSError:
-        return False
-
-
-def _file_mount(path: Path) -> bool:
-    if os.path.ismount(path):
-        return True
-    # os.path.ismount does not detect same-filesystem Linux bind mounts.
-    try:
-        target = str(path.resolve())
-        for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
-            mount_point = line.split()[4]
-            for escaped, literal in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
-                mount_point = mount_point.replace(escaped, literal)
-            if mount_point == target:
-                return True
-    except (OSError, IndexError):
-        pass
-    return False
 
 
 class LivenessManager:
@@ -105,19 +78,13 @@ class LivenessManager:
             }
 
     def _capability(self) -> tuple[str, str] | None:
-        path = self.settings.config_file
-        if path is None:
-            return "config_file_missing", "Set INSIGHTFACE_CONFIG_FILE to an editable server.toml to enable liveness from the Web UI."
-        if not path.is_file() or path.is_symlink():
-            return "config_file_not_regular", "The configured server.toml must be an existing regular file, not a symbolic link."
-        if _file_mount(path):
-            return "config_file_mount", "Mount the configuration directory writable instead of bind-mounting the single server.toml file, then recreate the container."
-        if not _writable(path) or not _writable(path.parent, directory=True):
-            return "config_not_writable", "The configuration file and its directory must be writable by the Server user (UID 10001 in the supplied Docker image). Grant host directory/file permissions, use a writable configuration directory mount, and recreate the container."
+        config_error = editable_config_error(self.settings.config_file)
+        if config_error:
+            return config_error
         addon_dir = self.model_path.parent
         parent = addon_dir if addon_dir.exists() else self.settings.models_dir
-        if not parent.is_dir() or not _writable(parent, directory=True):
-            return "addon_directory_not_writable", "Mount the addon directory writable at /models/addons and grant host directory permissions to the Server user (UID 10001 in the supplied Docker image); base models may remain read-only. Recreate the container after changing mounts."
+        if not parent.is_dir() or not writable(parent, directory=True):
+            return "addon_directory_not_writable", "Mount the model directory writable at /models and allow the Server process to create or write its addons subdirectory. Check host directory permissions and recreate the container after changing mounts."
         return None
 
     def status(self) -> dict[str, Any]:
@@ -175,66 +142,14 @@ class LivenessManager:
         return await asyncio.to_thread(self.status)
 
     def _save_config(self, path: Path) -> None:
-        # Caller holds an advisory lock across the complete preparation job.
-        # Re-read after the download so unrelated intervening edits survive.
-        original = path.read_text(encoding="utf-8")
-        load_server_config(path)
-        document = tomlkit.parse(original)
-        for section, key in (("inference", "addons"), ("addons", "auto_download")):
-            if section not in document:
-                document[section] = tomlkit.table()
-            table = document[section]
-            # Normal, inline, and dotted TOML tables share this mapping interface.
-            assert isinstance(table, MutableMapping)
-            if key not in table:
-                table[key] = tomlkit.array()
-            addons = table[key]
-            assert isinstance(addons, Array)
-            if "liveness" not in addons:
-                addons.append("liveness")
-        updated = tomlkit.dumps(document)
-        if original == updated:
-            return
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=path.parent,
-                prefix=".server-config-", suffix=".toml", delete=False,
-            ) as stream:
-                temporary = Path(stream.name)
-                os.fchmod(stream.fileno(), stat.S_IMODE(path.stat().st_mode))
-                stream.write(updated)
-                stream.flush()
-                os.fsync(stream.fileno())
-            load_server_config(temporary)
-            if self._stopping.is_set():
-                raise RuntimeError("Server shutdown interrupted addon preparation")
-            if path.read_text(encoding="utf-8") != original:
-                raise RuntimeError("Configuration changed while saving; retry")
-            os.replace(temporary, path)
-            temporary = None
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        write_enabled_addons(path, ("liveness",), cancelled=self._stopping.is_set)
 
     def _prepare(self) -> None:
         stage = "config"
         try:
             path = self.settings.config_file
             assert path is not None
-            # A stable sibling lock survives atomic config replacement. Sharing
-            # the configuration directory across processes shares this lock.
-            lock_fd = os.open(path.parent / ".liveness-management.lock", os.O_CREAT | os.O_RDONLY, 0o644)
-            with os.fdopen(lock_fd, "r") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise ApiError("addon_job_in_progress", "Another Server is preparing liveness; wait and refresh.", 409) from None
+            with liveness_config_lock(path):
                 capability = self._capability()
                 if capability:
                     raise ApiError("addon_management_unavailable", capability[1], 409)
@@ -257,7 +172,7 @@ class LivenessManager:
             # their text to the public status or logs.
             error = (
                 {"code": exc.code, "message": exc.message}
-                if isinstance(exc, ApiError)
+                if isinstance(exc, ApiError) or (isinstance(exc, AddonConfigError) and exc.code == "addon_job_in_progress")
                 else {
                     "code": "addon_download_failed" if stage == "download" else "addon_config_save_failed",
                     "message": (

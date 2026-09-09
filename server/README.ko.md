@@ -21,23 +21,24 @@ InsightFace Server는 직접 관리하는 인프라에서 일반적인 얼굴 �
 AWS 호환 대체품은 아니며 SigV4, IAM, Region 또는 AWS 리소스 의미 체계를
 구현하지 않습니다.
 
-현재 릴리스: **0.3.0**, Linux x86_64.
+현재 릴리스: **0.3.1**, Linux x86_64.
 
 | Runtime | Image |
 | --- | --- |
-| CPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cpu` |
-| NVIDIA GPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cuda12` |
+| CPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cpu` |
+| NVIDIA GPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cuda12` |
 
 이동 태그 `cpu`와 `cuda12`는 각 Runtime 계열의 최신 안정 버전을 가리킵니다.
 모호한 `latest` 태그는 사용하지 않습니다.
 [Maintainer Guide — English](docs/maintainer-guide.md)의 릴리스 정책을
 참고하세요.
 
-**0.3.0 변경 사항과 업그레이드:** `raccoon_s`, `raccoon_l` 및 해당 모델 설명 파일 지원,
-선택적 라이브니스 검사와 Web 모델 설치, BMP 입력이 추가되었습니다. 기존 배포의 모델,
-설정, 데이터 마운트를 유지할 수 있으며 라이브니스는 직접 활성화하지 않으면 꺼진 상태로
-유지됩니다. API와 SDK 결과에서 `model_version`이 제거되었습니다.
-[업그레이드 절차](docs/user-guide.ko.md#030으로-업그레이드)를 확인하세요.
+**0.3.1 배포 변경:** Server와 모델 설치 도구를 root로 실행하고 모델을 하나의 쓰기
+가능한 마운트로 통합하며 다운로드 시 addon 디렉터리를 자동 생성합니다. 호스트 UID/GID나
+공유 그룹 설정이 필요 없습니다. 이미지 태그와 Compose를 함께 업데이트하고 기존 모델,
+설정, 데이터를 보존하세요. 0.3.0부터 Raccoon 모델 설명 파일, 선택적 라이브니스와 BMP 입력을
+지원하며 API/SDK의 `model_version`이 제거되었습니다.
+[업그레이드 절차](docs/user-guide.ko.md#031으로-업그레이드)를 확인하세요.
 
 ![영문 InsightFace Server Dashboard](docs/images/customer/dashboard-en.jpg)
 
@@ -59,7 +60,7 @@ AWS 호환 대체품은 아니며 SigV4, IAM, Region 또는 AWS 리소스 의미
 - 제한된 메모리 이벤트, 여러 클라이언트, 선택적 `preview.mjpeg`를 지원하는
   서버 측 RTSP Monitor. 브라우저를 닫아도 모니터링은 중지되지 않습니다.
 - SQLite를 영구 원본으로 사용하고, 재구축 가능한 메모리 정확 인덱스,
-  읽기 전용 기본 모델, 쓰기 가능한 addon 및 설정 디렉터리, 영구 `/data`, migration, health check, 조용한 CPU
+  하나의 쓰기 가능한 모델 마운트와 설정 디렉터리, 영구 `/data`, migration, health check, 조용한 CPU
   fallback을 금지하는 엄격한 CUDA 시작 검증 제공.
 - JPEG, PNG, WebP, BMP 입력을 지원하며 원본 업로드는 기본적으로 보관하지 않음.
 
@@ -124,19 +125,22 @@ INT8은 FP32 대비 실측 용량 3.73배, 10M Top-5 처리량 3.35배를 기록
 
 전체 InsightFace 저장소 checkout에서 모델을 `server/.models`에 설치합니다.
 
-첫 모델 설치나 컨테이너 시작 전에 저장소 루트에서 호스트 디렉터리를 준비하세요. 생체 감지가 꺼져 있어도 addon 디렉터리는 필수이며, 없으면 Compose가 오류를 반환합니다. 공유 GID 10001과 setgid 권한으로 모델 설치 도구와 Server 모두 이 디렉터리에 쓸 수 있습니다. 새 셸을 열 때마다 UID/GID를 다시 내보내 설치 도구가 현재 호스트 사용자로 실행되도록 하세요. 실행 중인 Server에서 기본 모델은 계속 읽기 전용입니다.
+저장소 루트에서 실행하고 `server/config/server.toml`을 준비하세요. Server와 모델 설치 도구는 root(`0:0`)로 실행됩니다. Compose는 `server/.models`가 없으면 생성하고 하나의 쓰기 가능한 `/models`로 마운트합니다. `addons/`는 addon 다운로드를 요청할 때 생성됩니다. UID/GID 내보내기, addon 디렉터리 수동 생성이나 권한 설정은 필요하지 않습니다.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml \
   run --rm models install buffalo_l --accept-license
 ```
+
+모델을 설치하면서 라이브니스도 설정하려면 대신 다음 설치 명령을 사용하세요.
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server를 먼저 실행할 필요는 없습니다. 새 배포는 다음 `up -d`에서 라이브니스가 활성화됩니다. 이미 실행 중이면 `docker compose -f server/deploy/compose.cpu.yml restart server`가 필요하며, `up -d`만으로는 저장된 설정을 다시 읽지 않습니다. CUDA는 `compose.cuda12.yml`을 사용하세요.
 
 모델 도구는 `buffalo_l`, `buffalo_m`, `buffalo_s`, `buffalo_sc`,
 `antelopev2`, `raccoon_s`, `raccoon_l`의 7개 패키지를 모두 지원합니다.

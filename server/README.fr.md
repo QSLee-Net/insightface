@@ -21,25 +21,20 @@ images, embeddings, modèles et index peuvent rester dans votre réseau. Ce n’
 pas un remplacement compatible AWS et il n’implémente ni SigV4, IAM, Region, ni
 la sémantique des ressources AWS.
 
-Version actuelle : **0.3.0**, Linux x86_64.
+Version actuelle : **0.3.1**, Linux x86_64.
 
 | Environnement | Image |
 | --- | --- |
-| CPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cpu` |
-| GPU NVIDIA | `ghcr.io/deepinsight/insightface-server:0.3.0-cuda12` |
+| CPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cpu` |
+| GPU NVIDIA | `ghcr.io/deepinsight/insightface-server:0.3.1-cuda12` |
 
 Les tags mobiles `cpu` et `cuda12` désignent la dernière version stable de
 chaque famille. Aucun tag ambigu `latest` n’est fourni. Voir le
 [Maintainer Guide — English](docs/maintainer-guide.md) pour la politique.
 
-**Nouveautés et mise à niveau vers 0.3.0 :** Cette version ajoute `raccoon_s` et
-`raccoon_l` avec la prise en charge de leurs manifestes, la détection du vivant
-facultative avec installation du modèle depuis la Web UI, ainsi que les images
-BMP. Les déploiements existants peuvent conserver leurs montages de modèles,
-de configuration et de données ; la détection du vivant reste désactivée tant
-qu’elle n’est pas activée. Les résultats API et SDK ne contiennent plus
-`model_version`. Consultez les
-[étapes de mise à niveau](docs/user-guide.fr.md#mise-à-niveau-vers-030).
+**Nouveautés et mise à niveau vers 0.3.1 :** Server et l’installateur s’exécutent en root ; un seul montage de modèles en écriture remplace le montage séparé des addons. Compose crée le répertoire si nécessaire, sans configuration manuelle des UID/GID ou permissions. Mettez aussi à jour les fichiers Compose et vos surcharges en conservant les chemins des modèles, de la configuration et des données. Consultez la [procédure de mise à niveau](docs/user-guide.fr.md#mise-à-niveau-vers-031).
+
+Depuis 0.3.0, `raccoon_s`, `raccoon_l`, leurs manifestes, la détection du vivant facultative avec installation Web et les images BMP sont pris en charge. Depuis cette version, les résultats API et SDK omettent `model_version`. La détection du vivant reste désactivée tant qu’elle n’est pas activée.
 
 ![Dashboard InsightFace Server en anglais](docs/images/customer/dashboard-en.jpg)
 
@@ -62,7 +57,7 @@ qu’elle n’est pas activée. Les résultats API et SDK ne contiennent plus
   plusieurs clients et `preview.mjpeg` facultatif ; fermer le navigateur
   n’arrête pas la surveillance.
 - SQLite comme source durable, index exacts mémoire reconstruisibles,
-  modèles de base en lecture seule, répertoires addon et configuration accessibles en écriture, `/data` persistant, migrations, health checks et
+  un seul montage de modèles en écriture et un répertoire de configuration accessible en écriture, `/data` persistant, migrations, health checks et
   validation CUDA stricte sans fallback CPU silencieux.
 - Entrées JPEG, PNG, WebP et BMP ; les originaux ne sont pas conservés par défaut.
 
@@ -132,19 +127,22 @@ configuration de production.
 Depuis un checkout complet d’InsightFace, installez un modèle dans
 `server/.models` :
 
-Avant la première installation de modèle ou le démarrage des conteneurs, préparez les répertoires hôtes depuis la racine du dépôt. Le répertoire des addons est requis même lorsque la détection du vivant est désactivée ; Compose signale une erreur s’il manque. Le GID partagé 10001 et setgid permettent à l’installateur et au Server d’y écrire. Répétez les exports UID/GID dans chaque nouveau shell pour utiliser votre utilisateur hôte. Les modèles de base restent en lecture seule dans le Server.
+Exécutez les commandes depuis la racine du dépôt avec `server/config/server.toml` présent. Server et l’installateur de modèles s’exécutent en root (`0:0`). Compose crée `server/.models` si nécessaire et le monte une seule fois en écriture dans `/models`. Le sous-répertoire `addons` est créé lors du téléchargement d’un addon. Aucun export UID/GID ni préparation manuelle des répertoires ou permissions n’est nécessaire. Le démarrage normal ne télécharge pas de modèles ; la détection du vivant est désactivée par défaut.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml \
   run --rm models install buffalo_l --accept-license
 ```
+
+Pour configurer facultativement la détection du vivant pendant l’installation du modèle, utilisez cette commande à la place :
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server n’a pas besoin de fonctionner. Pour une nouvelle installation, le prochain `up -d` active la détection du vivant ; si Server fonctionne déjà, utilisez `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` seul ne recharge pas les paramètres enregistrés. Pour CUDA, utilisez `compose.cuda12.yml`.
 
 L’outil accepte les sept paquets : `buffalo_l`, `buffalo_m`, `buffalo_s`,
 `buffalo_sc`, `antelopev2`, `raccoon_s` et `raccoon_l`. Il écrit
@@ -263,6 +261,8 @@ L’installation, les entrées, les méthodes et les parcours complets du SDK so
 dans le [guide utilisateur](docs/user-guide.fr.md).
 
 ## Sécurité
+
+Le déploiement fourni utilise root avec les capabilities Docker par défaut et peut écrire dans les montages de modèles, de configuration et de données. Le reste du système de fichiers est en lecture seule et `no-new-privileges` reste actif. Limitez l’accès à l’hôte et les répertoires montés.
 
 Les images faciales et embeddings sont des données biométriques. En réseau,
 activez l’authentification, terminez HTTPS sur un reverse proxy fiable,

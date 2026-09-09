@@ -17,20 +17,23 @@ ONNX Runtime、Python或OpenCV。
 
 CPU启动示例：
 
-首次安装模型或启动容器前，请在仓库根目录准备宿主机目录。即使活体检测关闭，也必须创建 addon 目录；缺少目录时 Compose 会报错。共享 GID 10001 和 setgid 权限使模型安装器与 Server 都可写入该目录。每次打开新终端都要重新导出 UID/GID，让安装器使用当前宿主机用户。Server 运行时基础模型仍为只读。
+在仓库根目录执行，并保留 `server/config/server.toml`。Server 和模型安装器统一以 root（`0:0`）运行。Compose 会在缺少时自动创建 `server/.models`，并将其作为单个可写目录挂载到 `/models`；请求下载 addon 时才创建 `addons/`。无需导出 UID/GID、手动创建 addon 目录或设置目录权限。
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+如需在安装模型时同时配置活体，可改用下面的安装命令：
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+无需先启动 Server。全新部署随后执行 `up -d` 即会启用活体；已经运行的 Server 需要执行 `docker compose -f server/deploy/compose.cpu.yml restart server`，仅执行 `up -d` 不会重新加载已保存的设置。CUDA 部署改用 `compose.cuda12.yml`。
 
 GPU版把`compose.cpu.yml`替换成`compose.cuda12.yml`，健康检查端口改为`18098`。
 模型安装器会在下载前展示许可。InsightFace公开预训练模型默认仅允许非商业研究，
@@ -54,11 +57,28 @@ CPU访问`http://服务器地址:18097/`，GPU访问`http://服务器地址:1809
 
 ### 启用与模型安装
 
-`server/config/server.toml` 默认关闭活体：`inference.addons` 和 `addons.auto_download` 均为 `[]`。旧配置缺少这些键时也保持关闭。以下是手动启用的配置示例；请先安装模型，再重启：
+`server/config/server.toml` 默认关闭活体：`inference.addons` 和 `addons.auto_download` 均为 `[]`。旧配置缺少这些键时也保持关闭。
 
-在 **系统 → 活体检测** 点击 **下载并在重启后启用**。Server 下载发布的模型并校验 SHA-256 后，自动把同一份配置文件的上述两个列表设为 `["liveness"]`，保留其他设置；已校验的缓存直接复用。当前进程保持原状态，必须**手动重启 Server**后才启用。下载或配置保存失败会显示错误并允许重试；下载失败不会启用活体。仅有模型文件不代表已启用。
+**通过命令行启用，也适用于首次启动 Server 之前：**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` 会先检查已有配置是否可以更新，再安装并校验基础模型包、配置要求附带安装的 addons 和活体模型，最后向 `inference.addons` 与 `addons.auto_download` 都追加 `liveness`，保留其他条目、注释和设置。已校验的缓存会复用，缓存命中时仍会保存启用设置。下载失败不会改变配置；保存配置失败会明确报错并以非零状态退出，已缓存的有效模型可在重试时复用。
+
+两个 Compose 服务均将已有的整个 `server/config` 目录可写挂载到 `/etc/insightface`，并保留 `create_host_path: false`，因此安装器可在 Server 尚未运行时原子更新宿主机配置。该目录及 `server.toml` 必须存在。
+
+无需先启动 Server。全新部署随后执行 `up -d` 即会启用活体；已经运行的 Server 需要执行 `docker compose -f server/deploy/compose.cpu.yml restart server`，仅执行 `up -d` 不会重新加载已保存的设置。CUDA 部署改用 `compose.cuda12.yml`。
+
+不加 `--enable-liveness` 时，`models install` 保持原有行为，不写配置，默认活体仍关闭。`models addons install liveness` 只下载、校验 addon，不会启用活体。也可以按照下文通过 **系统 → 活体检测** 启用。
+
+在 **系统 → 活体检测** 点击 **下载并在重启后启用**。Server 下载发布的模型并校验 SHA-256 后，自动向同一份配置文件的上述两个列表追加 `liveness`，保留其他条目、注释和设置；已校验的缓存直接复用。当前进程保持原状态，必须**手动重启 Server**后才启用。下载或配置保存失败会显示错误并允许重试；下载失败不会启用活体。仅有模型文件不代表已启用。
 
 系统页面区分已校验的安装状态（`installed`）、当前运行状态（`enabled`）、已保存的下次启动配置（`configured_enabled`）和是否需要重启（`restart_required`）。下载或保存不改变当前推理。需要关闭时，在同一文件将 `inference.addons=[]` 和 `addons.auto_download=[]` 保存后手动重启。网页操作不修改注册开关，其默认值仍为 `liveness_on_registration=false`。
+
+**高级用法：手动配置活体。** 以下设置可替代启用参数或网页操作；重启前请先安装模型。
 
 ```toml
 [inference]
@@ -87,7 +107,7 @@ CUDA 部署改用 `compose.cuda12.yml`。独立 CLI 也支持
 模型来自[指定的 Release](https://github.com/deepinsight/insightface-model-addons/releases/download/addons/liveness.onnx)，
 下载后校验固定 SHA-256。宿主机路径为 `server/.models/addons/liveness.onnx`，
 容器路径为 `/models/addons/liveness.onnx`；所有 addon 平铺在同一 `addons/` 目录。
-基础模型目录继续只读挂载；addon 子目录和配置目录允许 Web 管理写入。
+模型根目录使用单个可写挂载，下载 addon 时按需创建 `addons/` 子目录；配置目录也允许网页管理写入。
 
 Docker 镜像只包含代码和依赖，不包含预训练权重。重建镜像不会给用户原有挂载目录补充
 模型。默认关闭活体，旧用户升级无需额外下载。若用户手动启用活体但未安装模型，启动会报 `addon_model_missing`，并显示
@@ -98,20 +118,20 @@ embedding；活体功能不改变识别模型摘要或 `embedding_contract_id`�
 
 ### 网页下载所需的挂载与权限
 
-Compose 保持 `/models` 只读，只把 `server/.models/addons` 单独可写挂载到 `/models/addons`。使用当前 Compose 文件安装模型或启动容器前，请先完成上面的初始目录准备；升级已有部署时也需执行。若要使用网页操作，还需给 Server 用户（UID/GID 10001）开放整个配置目录的写权限：`server/config` 挂载到 `/etc/insightface`，用于原子保存 `server.toml`。在 Linux 宿主机的仓库根目录执行：
+默认 Compose 为 Server 和模型安装器提供单个可写的 `/models` 挂载，并设置
+`create_host_path: true`。两者均以 root（`0:0`）运行，使用 Docker 默认 capabilities，
+不再设置 `cap_drop: [ALL]`。容器根文件系统仍为只读，并保留 `no-new-privileges`。
+这样无需配置宿主机 UID/GID 或执行 `chmod 777`。root 可以修改可写挂载中的文件，
+新下载的文件在宿主机上可能归 root 所有。
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+两个服务都将已有的整个 `server/config` 目录可写挂载到 `/etc/insightface`，供网页操作
+和 `--enable-liveness` 原子保存 `server.toml`。该目录和文件必须存在，Compose 不会
+自动创建配置源。自定义部署使用实际的模型和配置路径，并为两个服务提供同等可写目录挂载；
+自定义只读挂载可以读取已有模型，但无法支持网页下载或配置保存。
 
-自定义部署替换为实际挂载路径；CUDA 使用 `compose.cuda12.yml`。旧只读挂载仍可在
-关闭活体时正常运行，网页会说明无法在线修改的原因；也可以继续使用 CLI 安装并手动
-修改配置。文件已存在不会自动启用活体。网页保存成功后，执行
-`docker compose -f server/deploy/compose.cpu.yml restart server` 即可应用。
-修改挂载或代理环境变量则需要重新创建容器。下载需要代理时，在创建容器前设置
+CUDA 使用 `compose.cuda12.yml`。模型文件已存在不会自动启用活体。网页保存成功后执行
+`docker compose -f server/deploy/compose.cpu.yml restart server` 应用配置。
+修改挂载、运行用户、capabilities 或代理环境变量时，需要重新创建容器。下载需要代理时，在创建容器前设置
 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`，Compose 会传给 Server 和模型工具。
 代理应使用容器可访问的局域网地址；容器内的 `127.0.0.1` 不代表 Mac。
 该操作沿用 API Key 认证；关闭认证时，能访问 API 的用户也能准备活体。
@@ -280,7 +300,7 @@ matches = client.search("employees", "query.jpg", limit=5)
 
 ## 9. 数据、备份与安全
 
-- 持久化挂载 `/data`，基础模型只读，网页管理只需要 addon 子目录和配置目录可写。
+- 持久化保存 `/data`、可写模型根目录和配置目录。容器根文件系统继续只读，网页模型管理仍由 API 鉴权控制。
 - 停止写入后备份 SQLite 和裁剪图目录，或使用 SQLite 安全快照方式。
 - API Key 只以 hash 保存。后续启动同一数据卷时传入不同 `INSIGHTFACE_API_KEY`，会主动轮换当前 Key。
 - 不要记录图片、embedding 或 Key；除非确有需要，不要开启宽泛 CORS。
@@ -409,7 +429,7 @@ make -C server build-cuda12
 
 随后在Compose的模型安装与`up`命令中加入`--pull never`，即可使用本地镜像。构建
 使用固定基础镜像和锁定依赖，但仍需联网获取这些输入。公开版本Tag为
-`0.3.0-cpu`和`0.3.0-cuda12`；移动Tag `cpu`/`cuda12`分别指向最新稳定版本，
+`0.3.1-cpu`和`0.3.1-cuda12`；移动Tag `cpu`/`cuda12`分别指向最新稳定版本，
 明确不发布含义模糊的`latest`。
 
 升级前停止写入，使用SQLite安全方式备份`/data`以及可选裁剪图，并保留`/models`
@@ -417,17 +437,29 @@ make -C server build-cuda12
 已知Search，再切换正式数据。停止使用`docker compose down`且不要带`-v`；
 `docker compose down -v`会删除命名数据卷。
 
-### 升级到 0.3.0
+### 升级到 0.3.1
 
-本版新增 `raccoon_s`、`raccoon_l` 及其模型描述文件支持，集成可选活体检测、
-网页 addon 安装和 BMP 图片输入。Server 使用 Raccoon 的检测与识别模型，
-不加载包内的 verifier。
+0.3.1 简化 Docker 部署：两个服务统一以 root 和 Docker 默认 capabilities 运行，
+模型共用一个可写挂载。缺少模型根目录时由 Compose 自动创建，显式下载 addon 时创建
+`addons/`，无需准备宿主机 UID/GID 或共享组。
 
-**1.** 将 Server 代码和 Compose 文件更新到 0.3.0 对应版本，同时保留自己的
+自 0.3.0 起，Server 已支持 `raccoon_s`、`raccoon_l` 及其模型描述文件、可选活体、
+网页 addon 安装和 BMP 输入。Server 使用 Raccoon 的检测与识别模型，不加载 verifier。
+0.3.1 不改变这些功能和 API 响应契约。
+
+**1.** 将 Server 代码和 Compose 文件更新到 0.3.1 对应版本，同时保留自己的
 `server/config/server.toml` 设置及部署覆盖配置。保持原有模型路径、`/data`
 数据卷名称、裁剪图存储、端口和 API Key 设置。自定义 Compose 文件需要将
-`server` 和 `models` 两个服务的镜像都更新为对应的 `0.3.0-cpu` 或
-`0.3.0-cuda12`。以下命令应使用你原部署的 Compose 文件、覆盖配置和项目名称。
+`server` 和 `models` 两个服务的镜像都更新为对应的 `0.3.1-cpu` 或
+`0.3.1-cuda12`。以下命令应使用你原部署的 Compose 文件、覆盖配置和项目名称。
+
+只更新镜像标签不够。自定义 Compose 和覆盖文件也需将两个服务设置为
+`user: "0:0"`，移除 `cap_drop: [ALL]` 及旧 UID/GID、共享组设置，将 `/models`
+合并为单个可写挂载并设置 `create_host_path: true`，删除独立的 `/models/addons`
+挂载。保留容器根文件系统只读和 `no-new-privileges`。保留已有配置目录和文件：
+两个服务都需要整个配置目录可写以原子保存配置；将安装器原来的只读单文件挂载替换为
+目录挂载。已有基础模型和
+addon 缓存继续保留；标准部署无需递归重设权限或提前准备 addon 目录。
 
 **2.** 拉取新镜像并重新创建 Server 容器。在仓库根目录选择已有部署对应的命令：
 
@@ -447,11 +479,11 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-自行构建时，先构建 0.3.0 镜像，使用
+自行构建时，先构建 0.3.1 镜像，使用
 `up -d --no-build --pull never --force-recreate server`，无需拉取镜像。
 仅执行 `docker compose restart` 不会切换到新镜像，也不会应用挂载变更。
 
-**3.** 启动时自动执行数据库迁移。等待 `/v1/health` 返回 `ready` 和版本 `0.3.0`，
+**3.** 启动时自动执行数据库迁移。等待 `/v1/health` 返回 `ready` 和版本 `0.3.1`，
 再在 **系统** 页面确认模型和执行提供程序符合预期。检查原有人员库、人员是否
 保留，并执行一次已知图片的搜索。保持同一模型和特征契约时，已有样本、
 embedding 和人员库契约 ID 均会保留，无需重新注册。
@@ -469,10 +501,10 @@ embedding 和人员库契约 ID 均会保留，无需重新注册。
 新模型的特征契约，需要新建匹配的人员库并重新注册，或单独进行数据迁移。
 Web UI 不提供基础模型包切换。
 
-**API 与 SDK 兼容性：**模型、Collection 和 FaceSample 结果不再包含
+**自 0.3.0 起的 API 与 SDK 兼容性：**模型、Collection 和 FaceSample 结果不再包含
 `model_version`；模型身份使用 `model_id`，人员库兼容性使用
 `embedding_contract_id`。自有客户端应取消对旧字段的依赖，使用随项目提供的
-Python SDK 时同步升级到 `0.3.0`。执行活体时，`liveness` 包含 `status`、
+Python SDK 时同步升级到 `0.3.1`。执行活体时，`liveness` 包含 `status`、
 `is_live`、`live_score` 三个核心字段，仅 `input_rejected` 额外包含 `reason`；未执行时省略该结果。对识别请求启用活体前，
 请了解[活体响应与错误规则](#检测识别和错误返回)。
 

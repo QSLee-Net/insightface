@@ -76,9 +76,26 @@ curl -sS "${BASE_URL}/v1/collections/employees/search" -H "${AUTH_HEADER}" \
 
 ### 启用与模型安装
 
-`server/config/server.toml` 默认关闭活体：`inference.addons` 和 `addons.auto_download` 均为 `[]`。旧配置缺少这些键时也保持关闭。以下是手动启用的配置示例；请先安装模型，再重启：
+`server/config/server.toml` 默认关闭活体：`inference.addons` 和 `addons.auto_download` 均为 `[]`。旧配置缺少这些键时也保持关闭。
 
-在 **系统 → 活体检测** 点击 **下载并在重启后启用**。Server 下载发布的模型并校验 SHA-256 后，自动把同一份配置文件的上述两个列表设为 `["liveness"]`，保留其他设置；已校验的缓存直接复用。当前进程保持原状态，必须**手动重启 Server**后才启用。下载或配置保存失败会显示错误并允许重试；下载失败不会启用活体。仅有模型文件不代表已启用。
+**通过命令行启用，也适用于首次启动 Server 之前：**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` 会先检查已有配置是否可以更新，再安装并校验基础模型包、配置要求附带安装的 addons 和活体模型，最后向 `inference.addons` 与 `addons.auto_download` 都追加 `liveness`，保留其他条目、注释和设置。已校验的缓存会复用，缓存命中时仍会保存启用设置。下载失败不会改变配置；保存配置失败会明确报错并以非零状态退出，已缓存的有效模型可在重试时复用。
+
+两个 Compose 服务均将已有的整个 `server/config` 目录可写挂载到 `/etc/insightface`，并保留 `create_host_path: false`，因此安装器可在 Server 尚未运行时原子更新宿主机配置。该目录及 `server.toml` 必须存在。
+
+无需先启动 Server。全新部署随后执行 `up -d` 即会启用活体；已经运行的 Server 需要执行 `docker compose -f server/deploy/compose.cpu.yml restart server`，仅执行 `up -d` 不会重新加载已保存的设置。CUDA 部署改用 `compose.cuda12.yml`。
+
+不加 `--enable-liveness` 时，`models install` 保持原有行为，不写配置，默认活体仍关闭。`models addons install liveness` 只下载、校验 addon，不会启用活体。也可以按照下文通过 **系统 → 活体检测** 启用。
+
+在 **系统 → 活体检测** 点击 **下载并在重启后启用**。Server 下载发布的模型并校验 SHA-256 后，自动向同一份配置文件的上述两个列表追加 `liveness`，保留其他条目、注释和设置；已校验的缓存直接复用。当前进程保持原状态，必须**手动重启 Server**后才启用。下载或配置保存失败会显示错误并允许重试；下载失败不会启用活体。仅有模型文件不代表已启用。
+
+**高级用法：手动配置活体。** 以下设置可替代启用参数或网页操作；重启前请先安装模型。
 
 ```toml
 [inference]
@@ -94,7 +111,7 @@ auto_download = ["liveness"]
 
 `inference.addons` 控制运行时启用；`addons.auto_download` 独立控制模型安装时的附带下载。将后者设为 `["liveness"]` 后，安装任意受支持的基础包时都会补齐 addon，基础包已缓存也一样。**启动 Server 时不下载模型。** 安装工具和 Server 读取同一份配置文件。
 
-运行以下安装命令前，请先完成[用户指南的初始准备](user-guide.zh-CN.md)，设置宿主机目录权限并导出 UID/GID。
+使用[用户指南初始设置](user-guide.zh-CN.md)中的当前 Compose 文件和已有配置。Server 与安装器以 root 运行，共用单个可写模型挂载；Compose 创建模型根目录，显式下载 addon 时创建 `addons/`，无需设置宿主机 UID/GID 或手动调整权限。
 
 ```bash
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l --accept-license
@@ -109,7 +126,7 @@ CUDA 部署改用 `compose.cuda12.yml`。独立 CLI 也支持
 模型来自[指定的 Release](https://github.com/deepinsight/insightface-model-addons/releases/download/addons/liveness.onnx)，
 下载后校验固定 SHA-256。宿主机路径为 `server/.models/addons/liveness.onnx`，
 容器路径为 `/models/addons/liveness.onnx`；所有 addon 平铺在同一 `addons/` 目录。
-基础模型目录继续只读挂载；addon 子目录和配置目录允许 Web 管理写入。
+模型根目录使用单个可写挂载，下载 addon 时按需创建 `addons/` 子目录；配置目录也允许网页管理写入。
 
 Docker 镜像只包含代码和依赖，不包含预训练权重。重建镜像不会给用户原有挂载目录补充
 模型。默认关闭活体，旧用户升级无需额外下载。若用户手动启用活体但未安装模型，启动会报 `addon_model_missing`，并显示

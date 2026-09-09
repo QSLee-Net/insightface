@@ -27,8 +27,8 @@ def install_addon(name: str, models_dir: Path) -> Path:
     artifact = ADDON_CATALOG[name]
     directory = models_dir / "addons"
     directory.mkdir(parents=True, exist_ok=True)
-    # A read-opened advisory lock is usable by both the CLI and runtime UIDs.
-    # Do not chmod a provisioned shared directory or another user's cache.
+    # Use the same advisory lock for CLI and Web installs, including custom
+    # deployments with different UIDs. Keep existing directory permissions.
     lock_fd = os.open(directory / f".{name}-install.lock", os.O_CREAT | os.O_RDONLY, 0o644)
     with os.fdopen(lock_fd, "r") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -36,7 +36,7 @@ def install_addon(name: str, models_dir: Path) -> Path:
         path = ensure_addon(name, root=models_dir)
         if not cached or path.stat().st_mode & 0o444 != 0o444:
             # Downloads start with tempfile's private mode. These are public
-            # model artifacts, readable by the separately running Server UID.
+            # model artifacts, also readable outside the installing process.
             path.chmod(0o644)
         return path
 

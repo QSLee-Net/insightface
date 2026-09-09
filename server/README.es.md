@@ -22,24 +22,20 @@ Imágenes, embeddings, modelos e índices pueden permanecer dentro de su red. No
 es un reemplazo compatible con AWS y no implementa SigV4, IAM, Region ni
 semántica de recursos AWS.
 
-Versión actual: **0.3.0**, Linux x86_64.
+Versión actual: **0.3.1**, Linux x86_64.
 
 | Entorno | Imagen |
 | --- | --- |
-| CPU | `ghcr.io/deepinsight/insightface-server:0.3.0-cpu` |
-| GPU NVIDIA | `ghcr.io/deepinsight/insightface-server:0.3.0-cuda12` |
+| CPU | `ghcr.io/deepinsight/insightface-server:0.3.1-cpu` |
+| GPU NVIDIA | `ghcr.io/deepinsight/insightface-server:0.3.1-cuda12` |
 
 Las etiquetas móviles `cpu` y `cuda12` identifican la última versión estable de
 cada familia. No se usa una etiqueta ambigua `latest`. Consulte
 [Maintainer Guide — English](docs/maintainer-guide.md) para la política.
 
-**Novedades y actualización a 0.3.0:** Esta versión añade `raccoon_s` y
-`raccoon_l` con soporte para sus manifiestos, detección de vida opcional con
-instalación del modelo desde la Web UI y entrada de imágenes BMP. Los
-despliegues existentes pueden conservar los montajes de modelos, configuración
-y datos; la detección de vida sigue desactivada hasta que se habilite. Los
-resultados de la API y del SDK ya no incluyen `model_version`. Consulte los
-[pasos de actualización](docs/user-guide.es.md#actualizar-a-030).
+**Novedades y actualización a 0.3.1:** Server y el instalador se ejecutan como root; un único montaje de modelos con escritura sustituye al montaje separado de addons. Compose crea el directorio cuando hace falta, sin configurar UID/GID ni permisos manualmente. Actualice también los archivos Compose y sus overrides, conservando las rutas de modelos, configuración y datos. Consulte los [pasos de actualización](docs/user-guide.es.md#actualizar-a-031).
+
+Desde 0.3.0 se admiten `raccoon_s`, `raccoon_l`, sus manifiestos, prueba de vida opcional con instalación Web e imágenes BMP. Desde esa versión, los resultados API y SDK omiten `model_version`. La prueba de vida permanece desactivada hasta que se habilite.
 
 ![Panel de InsightFace Server en inglés](docs/images/customer/dashboard-en.jpg)
 
@@ -62,7 +58,7 @@ resultados de la API y del SDK ya no incluyen `model_version`. Consulte los
   múltiples clientes y `preview.mjpeg` opcional; cerrar el navegador no detiene
   el monitor.
 - SQLite como fuente persistente, índices exactos reconstruibles en memoria,
-  modelos base de solo lectura, directorios de addon y configuración escribibles, `/data` persistente, migraciones, health checks y
+  un único montaje de modelos con escritura y un directorio de configuración escribible, `/data` persistente, migraciones, health checks y
   validación CUDA estricta sin fallback silencioso a CPU.
 - Entrada JPEG, PNG, WebP y BMP; los originales no se conservan por defecto.
 
@@ -132,19 +128,22 @@ configuración de producción.
 Desde un checkout completo de InsightFace, instale un modelo en
 `server/.models`:
 
-Antes de instalar el primer modelo o iniciar los contenedores, prepare los directorios del host desde la raíz del repositorio. El directorio de addons es obligatorio incluso con liveness desactivado; Compose devuelve un error si falta. El GID compartido 10001 y setgid permiten escribir tanto al instalador como al Server. Repita las exportaciones de UID/GID en cada nueva terminal para que el instalador use su usuario del host. Los modelos base siguen siendo de solo lectura en el Server.
+Ejecute los comandos desde la raíz del repositorio con `server/config/server.toml` presente. Server y el instalador de modelos se ejecutan como root (`0:0`). Compose crea `server/.models` si falta y lo monta una sola vez con escritura en `/models`. El subdirectorio `addons` se crea al descargar un addon. No hacen falta exportaciones UID/GID ni preparar directorios o permisos manualmente. El arranque normal no descarga modelos; la prueba de vida está desactivada por defecto.
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml \
   run --rm models install buffalo_l --accept-license
 ```
+
+Opcionalmente puede configurar la prueba de vida al instalar el modelo; sustituya el comando de instalación por:
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server no tiene que estar en ejecución. En una instalación nueva, el siguiente `up -d` activa la prueba de vida; si Server ya está ejecutándose, use `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` por sí solo no recarga los ajustes guardados. Para CUDA use `compose.cuda12.yml`.
 
 La herramienta admite los siete paquetes: `buffalo_l`, `buffalo_m`,
 `buffalo_s`, `buffalo_sc`, `antelopev2`, `raccoon_s` y `raccoon_l`.
@@ -263,6 +262,8 @@ La instalación, entradas, métodos y flujos completos del SDK están en la
 [guía de usuario](docs/user-guide.es.md).
 
 ## Seguridad
+
+El despliegue incluido usa root con las capabilities predeterminadas de Docker y puede escribir en los montajes de modelos, configuración y datos. El resto del sistema de archivos es de solo lectura y se conserva `no-new-privileges`. Limite el acceso al host y los directorios montados.
 
 Las imágenes faciales y embeddings son datos biométricos. En red, active la
 autenticación, termine HTTPS en un proxy inverso fiable, restrinja Docker y los

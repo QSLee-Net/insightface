@@ -123,9 +123,26 @@ unchanged in authenticated deployments.
 
 ### Enable and install the model
 
-Liveness is disabled by default in `server/config/server.toml`: both `inference.addons` and `addons.auto_download` are `[]`. Existing configurations that omit these keys also remain disabled. The following is an example for enabling it manually; install the model before restarting:
+Liveness is disabled by default in `server/config/server.toml`: both `inference.addons` and `addons.auto_download` are `[]`. Existing configurations that omit these keys also remain disabled.
 
-In **System → Liveness**, choose **Download and enable after restart**. The Server downloads the published model, verifies its SHA-256, then saves `["liveness"]` in both configuration lists while preserving other settings. A verified cached file is reused. The current process stays unchanged: **manually restart the Server** to enable liveness. Download or configuration errors are shown with a retry action; a failed download does not enable liveness. A downloaded file alone does not activate it.
+**Enable from the command line, including before the first Server startup:**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` first checks that the existing configuration can be updated. It installs and verifies the base package, configured installation addons, and liveness, then adds `liveness` to both `inference.addons` and `addons.auto_download`, preserving other entries, comments, and settings. Verified caches are reused, but the enable setting is still saved on a cache hit. A failed download leaves the configuration unchanged; a configuration-save failure exits with an error and a nonzero status. Successfully cached files can be reused on retry.
+
+Both Compose services mount the whole existing `server/config` directory writable at `/etc/insightface`, with `create_host_path: false`, so the installer can atomically update the host configuration without a running Server. The directory and `server.toml` must exist.
+
+The Server does not need to be running. On a new deployment, the next `up -d` starts with liveness enabled; if Server is already running, use `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` alone does not reload saved settings. For CUDA, use `compose.cuda12.yml`.
+
+Without `--enable-liveness`, `models install` keeps the existing behavior and does not write configuration; the default remains disabled. `models addons install liveness` only downloads/verifies the addon and does not enable it. You can also enable through **System → Liveness** as described below.
+
+In **System → Liveness**, choose **Download and enable after restart**. The Server downloads the published model, verifies its SHA-256, then adds `liveness` to both configuration lists while preserving other entries, comments, and settings. A verified cached file is reused. The current process stays unchanged: **manually restart the Server** to enable liveness. Download or configuration errors are shown with a retry action; a failed download does not enable liveness. A downloaded file alone does not activate it.
+
+**Advanced: configure liveness manually.** The following settings are an alternative to the enabling flag or Web action; install the model before restarting.
 
 ```toml
 [inference]
@@ -141,7 +158,7 @@ auto_download = ["liveness"]
 
 `inference.addons` controls runtime use; `addons.auto_download` independently controls installation. Setting the latter to `["liveness"]` installs the addon alongside any supported base package, including a cached base package. Server startup never downloads models. Installer and Server read the same configuration file.
 
-Before running these installer commands, complete the host-directory preparation and UID/GID exports in the [initial user-guide setup](user-guide.md).
+Use the current Compose files and existing configuration from the [initial user-guide setup](user-guide.md). Server and installer run as root with one writable model mount; Compose creates the model root, and explicit addon downloads create `addons/`. No host UID/GID or manual permission setup is required.
 
 ```bash
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l --accept-license
@@ -156,7 +173,7 @@ For CUDA use `compose.cuda12.yml`. The file is stored at
 `/models/addons/liveness.onnx` in the container. All addon models share this flat
 `addons/` directory. The installer verifies the pinned SHA-256 of the
 [published model](https://github.com/deepinsight/insightface-model-addons/releases/download/addons/liveness.onnx).
-Base model mounts remain read-only; the addon subdirectory and configuration directory are writable for Web management. Images contain code and dependencies, not pretrained weights. Upgrading with the default disabled configuration needs no addon download.
+Compose mounts the model root once with write access; addon downloads create its `addons/` subdirectory as needed. The configuration directory is also writable for Web management. Images contain code and dependencies, not pretrained weights. Upgrading with the default disabled configuration needs no addon download.
 
 If an existing deployment enables liveness without installing it, startup fails
 with `addon_model_missing`, the required path and an installation command.

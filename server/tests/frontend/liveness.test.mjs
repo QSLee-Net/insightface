@@ -167,7 +167,9 @@ test("management advice is translated by stable code despite changes to backend 
     can_enable: false, unavailable_code: "addon_directory_not_writable", unavailable_reason: "The server-specific permission message changed.",
   }) });
   assert.equal(view.unavailableCode, "addon_directory_not_writable");
-  assert.match(livenessMessage(view.unavailableCode, view.unavailableReason, translate), /\/models\/addons/);
+  const hint = livenessMessage(view.unavailableCode, view.unavailableReason, translate);
+  assert.match(hint, /\/models/);
+  assert.match(hint, /addons/);
 });
 
 test("missing runtime status remains unknown and unavailable deployments explain manual setup", () => {

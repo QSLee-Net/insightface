@@ -23,7 +23,7 @@ export const LIVENESS_MESSAGES = Object.freeze({
   config_file_not_regular: "Use an existing regular server.toml file, without a symbolic link.",
   config_file_mount: "Mount the configuration directory writable, then recreate the container.",
   config_not_writable: "Give the Server user write access to the configuration file and directory, then recreate the container.",
-  addon_directory_not_writable: "Mount /models/addons writable and give the Server user directory write access, then recreate the container.",
+  addon_directory_not_writable: "Mount /models writable and allow the Server to create or write its addons directory, then recreate the container.",
   addon_config_invalid: "Correct the unreadable or invalid server.toml before enabling liveness.",
   addon_model_invalid: "The local liveness model is invalid. Restore the official file or remove it and retry; it will not be overwritten automatically.",
   server_stopping: "Server is shutting down. Try again after it restarts.",

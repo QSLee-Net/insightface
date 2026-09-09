@@ -5,8 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
+from .addon_config import (
+    liveness_config_lock,
+    require_editable_config,
+    write_enabled_addons,
+)
 from .addons import install_addon, require_installed_addon
 from .config import SUPPORTED_ADDONS, load_server_config
 from .licensing import ModelLicense
@@ -89,6 +95,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Accept the displayed model license in non-interactive environments",
     )
+    install.add_argument(
+        "--enable-liveness",
+        action="store_true",
+        help="Install and verify liveness, then enable it in server.toml for the next Server start",
+    )
     verify = commands.add_parser(
         "verify", help="Verify model files, manifest, and the signed model license"
     )
@@ -103,8 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     models_dir = _models_dir(args.models_dir)
     try:
-        config_path = args.config_file or os.environ.get("INSIGHTFACE_CONFIG_FILE")
-        config = load_server_config(Path(config_path).expanduser() if config_path else None)
+        config_value = args.config_file or os.environ.get("INSIGHTFACE_CONFIG_FILE")
+        config_path = Path(config_value).expanduser() if config_value else None
+        if args.command == "install" and args.enable_liveness:
+            # Reject unsuitable mounts before downloading even the base package.
+            config_path = require_editable_config(config_path)
+        config = load_server_config(config_path)
         if args.command == "addons":
             operation = install_addon if args.addon_command == "install" else require_installed_addon
             path = operation(args.addon, models_dir)
@@ -127,26 +142,68 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "install":
             package = package_for_name(args.model)
-            if installed_package_name(models_dir) != package.name:
-                _confirm_license(package, args.accept_license)
-            status = install_package(package, models_dir)
-            for addon in config.auto_download_addons:
-                try:
-                    path = install_addon(addon, models_dir)
-                except (OSError, RuntimeError) as exc:
-                    raise ModelPackageError(
-                        f"Base model package {package.name} is installed, but addon "
-                        f"{addon} installation failed: {exc}. Rerun the same install "
-                        "command to reuse the base package and complete the addons."
-                    ) from exc
-                print(f"Addon {addon} is installed and verified: {path}")
-            print(
-                f"Model package {package.name} is installed and verified in "
-                f"{models_dir.expanduser().resolve()}."
-                if status == "installed"
-                else f"Model package {package.name} is already installed and verified."
+            lock = (
+                liveness_config_lock(config_path)
+                if args.enable_liveness and config_path is not None
+                else nullcontext()
             )
-            print(license_notice(package))
+            with lock:
+                if args.enable_liveness:
+                    config_path = require_editable_config(config_path)
+                    config = load_server_config(config_path)
+                if installed_package_name(models_dir) != package.name:
+                    _confirm_license(package, args.accept_license)
+                status = install_package(package, models_dir)
+                requested_addons = tuple(dict.fromkeys(
+                    (*config.auto_download_addons, *(("liveness",) if args.enable_liveness else ()))
+                ))
+                for addon in requested_addons:
+                    try:
+                        path = install_addon(addon, models_dir)
+                        if args.enable_liveness:
+                            require_installed_addon(addon, models_dir)
+                    except (OSError, RuntimeError) as exc:
+                        if args.enable_liveness:
+                            raise ModelPackageError(
+                                f"Base model package {package.name} is installed, but addon "
+                                f"{addon} could not be installed or verified. Configuration was "
+                                "not changed by this command. Check the model cache and network, "
+                                "then rerun the same install command to reuse verified files."
+                            ) from exc
+                        raise ModelPackageError(
+                            f"Base model package {package.name} is installed, but addon "
+                            f"{addon} installation failed: {exc}. Rerun the same install "
+                            "command to reuse the base package and complete the addons."
+                        ) from exc
+                    print(f"Addon {addon} is installed and verified: {path}")
+                if args.enable_liveness:
+                    assert config_path is not None
+                    try:
+                        write_enabled_addons(config_path, ("liveness",))
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        raise ModelPackageError(
+                            "Could not save the liveness configuration. The downloaded models "
+                            "can be reused. Check server.toml, directory permissions, and "
+                            "concurrent edits, then rerun the same command. Configuration "
+                            "enablement has not been confirmed; the Server was not restarted."
+                        ) from exc
+                print(
+                    f"Model package {package.name} is installed and verified in "
+                    f"{models_dir.expanduser().resolve()}."
+                    if status == "installed"
+                    else f"Model package {package.name} is already installed and verified."
+                )
+                print(license_notice(package))
+                if args.enable_liveness:
+                    print("Liveness is installed and configured for the next Server start.")
+                    print(
+                        "Restart a running Server to apply the saved settings; "
+                        "this command does not restart it."
+                    )
+                    print(
+                        "Compose: docker compose -f server/deploy/compose.cpu.yml restart server "
+                        "(use compose.cuda12.yml for CUDA and your deployment overrides)."
+                    )
             return 0
         if args.command == "verify":
             installed, models, license_info = verify_installed(models_dir)

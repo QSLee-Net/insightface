@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 from fastapi.testclient import TestClient
 from insightface.addons import catalog
-from insightface_server import addon_management
+from insightface_server import addon_config, addon_management, models_cli
 from insightface_server.app import create_app
 from insightface_server.config import Settings, load_server_config
 
@@ -138,21 +138,21 @@ def test_download_failure_keeps_configuration_and_hides_proxy_credentials(prepar
 def test_config_save_failure_preserves_disabled_config_and_download_for_retry(preparation, monkeypatch):
     settings, calls = preparation
     original = settings.config_file.read_bytes()
-    real_replace = addon_management.os.replace
+    real_replace = addon_config.os.replace
 
     def fail(source, target):
         if target == settings.config_file:
             raise PermissionError("read-only bind mount")
         return real_replace(source, target)
 
-    monkeypatch.setattr(addon_management.os, "replace", fail)
+    monkeypatch.setattr(addon_config.os, "replace", fail)
     with TestClient(create_app(settings)) as client:
         assert client.post("/v1/addons/liveness/enable", json={}).status_code == 202
         status = completed(client)
         assert status["error"]["code"] == "addon_config_save_failed"
         assert status["installed"] is True
         assert settings.config_file.read_bytes() == original
-        monkeypatch.setattr(addon_management.os, "replace", real_replace)
+        monkeypatch.setattr(addon_config.os, "replace", real_replace)
         assert client.post("/v1/addons/liveness/enable", json={}).status_code == 202
         assert completed(client)["restart_required"]
     assert len(calls) == 1
@@ -197,7 +197,7 @@ def test_readonly_or_missing_management_paths_report_actionable_status(preparati
     elif restriction == "missing":
         settings = replace(settings, config_file=None)
     else:
-        monkeypatch.setattr(addon_management.os.path, "ismount", lambda path: path == settings.config_file)
+        monkeypatch.setattr(addon_config.os.path, "ismount", lambda path: path == settings.config_file)
     try:
         with TestClient(create_app(settings)) as client:
             status = client.get("/v1/addons/liveness").json()
@@ -343,3 +343,43 @@ def test_explicit_cors_origin_is_allowed_and_openapi_documents_management(prepar
         assert "202" in operation["responses"]
         assert operation["requestBody"]["required"]
         assert "disabled by default" in spec["info"]["description"]
+
+
+def test_cli_enable_job_and_web_share_the_same_config_lock(preparation, monkeypatch):
+    settings, calls = preparation
+    started, release = threading.Event(), threading.Event()
+    install = models_cli.install_addon
+    monkeypatch.setattr(models_cli, "installed_package_name", lambda root: "buffalo_l")
+    monkeypatch.setattr(models_cli, "install_package", lambda *args: "already_installed")
+
+    def paused(*args):
+        started.set()
+        assert release.wait(5)
+        return install(*args)
+
+    monkeypatch.setattr(models_cli, "install_addon", paused)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(models_cli.main([
+        "--config-file", str(settings.config_file),
+        "--models-dir", str(settings.models_dir),
+        "install", "buffalo_l", "--enable-liveness",
+    ])))
+    try:
+        with TestClient(create_app(settings)) as client:
+            worker.start()
+            assert started.wait(2)
+            assert client.post("/v1/addons/liveness/enable", json={}).status_code == 202
+            status = completed(client)
+            assert status["error"]["code"] == "addon_job_in_progress"
+            assert calls == []
+            release.set()
+            worker.join(timeout=5)
+            assert not worker.is_alive() and result == [0]
+            status = client.get("/v1/addons/liveness").json()
+            assert status["enabled"] is False
+            assert status["configured_enabled"] is status["restart_required"] is True
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(timeout=5)
+    assert len(calls) == 1

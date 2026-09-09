@@ -88,8 +88,8 @@ test("repository README and bundled help sources exist for every supported local
   ];
   const requiredReadmeMarkers = [
     "Rekognition",
-    "0.3.0-cpu",
-    "0.3.0-cuda12",
+    "0.3.1-cpu",
+    "0.3.1-cuda12",
     "dashboard-en.jpg",
     "collections-en.jpg",
     "monitoring-en.jpg",
@@ -242,10 +242,10 @@ test("frontend assets use the server's /assets mount and no external CDN", async
   const index = await source("index.html");
   const docs = await source("openapi.html");
   assert.doesNotMatch(`${index}\n${docs}`, /\/static\//);
-  assert.match(index, /href="\/assets\/styles\.css\?v=0\.3\.0-r1"/);
-  assert.match(index, /src="\/assets\/app\.mjs\?v=0\.3\.0-r1"/);
+  assert.match(index, /href="\/assets\/styles\.css\?v=0\.3\.1-r1"/);
+  assert.match(index, /src="\/assets\/app\.mjs\?v=0\.3\.1-r1"/);
   assert.match(docs, /href="\/assets\/openapi\.css"/);
-  assert.match(docs, /src="\/assets\/openapi\.js\?v=0\.3\.0-r1"/);
+  assert.match(docs, /src="\/assets\/openapi\.js\?v=0\.3\.1-r1"/);
   const externalReferences = [...`${index}\n${docs}`.matchAll(/(?:src|href)="(https?:\/\/[^\"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(externalReferences, ["https://www.insightface.ai"]);
 });

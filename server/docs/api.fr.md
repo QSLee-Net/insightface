@@ -26,11 +26,28 @@ curl -fsS "${BASE_URL}/v1/health"
 
 ## Addon optionnel de détection du vivant
 
-La détection du vivant est désactivée par défaut dans `server/config/server.toml` : `inference.addons` et `addons.auto_download` valent `[]`. Les anciennes configurations sans ces clés restent désactivées. Voici un exemple d’activation manuelle ; installez le modèle avant de redémarrer.
+La détection du vivant est désactivée par défaut dans `server/config/server.toml` : `inference.addons` et `addons.auto_download` valent `[]`. Les anciennes configurations sans ces clés restent désactivées.
 
-Dans **Système → Détection du vivant**, téléchargez le modèle et activez-le pour le prochain démarrage. Après vérification SHA-256, les deux listes deviennent `["liveness"]` ; les autres réglages sont conservés. Un fichier déjà vérifié est réutilisé. **Redémarrez manuellement le Server** pour appliquer le changement. Les erreurs permettent de réessayer ; un téléchargement échoué n’active pas la détection.
+**Activer en ligne de commande, y compris avant le premier démarrage de Server :**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` vérifie d’abord que la configuration existante peut être mise à jour. Il installe et vérifie le paquet de base, les addons configurés pour l’installation et la détection du vivant, puis ajoute `liveness` à `inference.addons` et `addons.auto_download`, en conservant les autres entrées, commentaires et paramètres. Les caches vérifiés sont réutilisés, mais l’activation est enregistrée même si les modèles sont déjà en cache. Un échec de téléchargement ne modifie pas la configuration ; un échec d’enregistrement produit une erreur explicite et un code de sortie non nul. Les fichiers valides en cache restent réutilisables lors d’un nouvel essai.
+
+Les deux services Compose montent tout le répertoire existant `server/config` en écriture dans `/etc/insightface`, avec `create_host_path: false`. L’installateur peut ainsi mettre à jour atomiquement la configuration de l’hôte sans Server en cours d’exécution. Le répertoire et `server.toml` doivent exister.
+
+Server n’a pas besoin de fonctionner. Pour une nouvelle installation, le prochain `up -d` active la détection du vivant ; si Server fonctionne déjà, utilisez `docker compose -f server/deploy/compose.cpu.yml restart server`. `up -d` seul ne recharge pas les paramètres enregistrés. Pour CUDA, utilisez `compose.cuda12.yml`.
+
+Sans `--enable-liveness`, `models install` garde son comportement et n’écrit pas la configuration ; la détection du vivant reste désactivée par défaut. `models addons install liveness` télécharge et vérifie seulement l’addon, sans l’activer. L’activation reste aussi disponible dans **Système → Détection du vivant**, comme indiqué ci-dessous.
+
+Dans **Système → Détection du vivant**, téléchargez le modèle et activez-le pour le prochain démarrage. Après vérification SHA-256, `liveness` est ajouté aux deux listes ; les autres entrées, commentaires et réglages sont conservés. Un fichier déjà vérifié est réutilisé. **Redémarrez manuellement le Server** pour appliquer le changement. Les erreurs permettent de réessayer ; un téléchargement échoué n’active pas la détection.
 
 [Montages et permissions pour les téléchargements Web](user-guide.fr.md#montages-et-permissions-pour-les-téléchargements-web).
+
+**Avancé : configuration manuelle.** Ces paramètres remplacent le paramètre d’activation ou l’action Web ; installez le modèle avant de redémarrer.
 
 ```toml
 [inference]
@@ -48,7 +65,7 @@ auto_download = ["liveness"]
 
 `inference.addons` contrôle l’exécution et `addons.auto_download` le téléchargement complémentaire à l’installation d’un paquet de base. Avec `["liveness"]`, l’addon est installé même si le paquet de base est en cache. Aucun téléchargement au démarrage. L’installateur et le Server lisent le même fichier.
 
-Avant ces commandes d’installation, préparez les répertoires hôtes et exportez UID/GID selon la [configuration initiale du guide utilisateur](user-guide.fr.md).
+Exécutez les commandes depuis la racine du dépôt avec `server/config/server.toml` présent. Le Compose fourni exécute l’installateur en root, crée le répertoire des modèles si nécessaire et monte `/models` en écriture ; le téléchargement de l’addon crée `addons`. Aucune préparation manuelle des UID/GID ou permissions n’est nécessaire. Consultez la [configuration initiale du guide utilisateur](user-guide.fr.md).
 
 ```bash
 docker compose -f server/deploy/compose.cpu.yml run --rm models addons install liveness

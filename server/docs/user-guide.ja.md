@@ -14,20 +14,23 @@
 
 CPU 版には Linux x86_64、Docker Engine、Docker Compose が必要です。CUDA 版には対応 NVIDIA Driver と NVIDIA Container Toolkit も必要ですが、ホスト側 CUDA、cuDNN、ORT、Python、OpenCV は不要です。
 
-初回のモデルインストールやコンテナ起動の前に、リポジトリのルートでホスト側のディレクトリを準備してください。生体検知が無効でも addon ディレクトリは必須で、存在しない場合は Compose がエラーを返します。共有 GID 10001 と setgid により、モデルインストーラーと Server の両方が書き込めます。新しいシェルでは UID/GID の export を再実行し、インストーラーをホストのユーザーで動かしてください。実行中の Server では基本モデルは読み取り専用です。
+リポジトリのルートで実行し、`server/config/server.toml` を用意してください。Server とモデルインストーラーは root（`0:0`）で実行します。Compose は `server/.models` がなければ作成し、単一の書き込み可能な `/models` としてマウントします。`addons/` は addon のダウンロードを要求したときに作成されます。UID/GID の export、addon ディレクトリの手動作成、権限設定は不要です。
 
 ```bash
-mkdir -p server/.models/addons
-chmod a+rx server/.models
-sudo chgrp 10001 server/.models/addons
-sudo chmod g+rwxs server/.models/addons
-export INSIGHTFACE_MODELS_UID="$(id -u)"
-export INSIGHTFACE_MODELS_GID="$(id -g)"
 docker compose -f server/deploy/compose.cpu.yml pull
 docker compose -f server/deploy/compose.cpu.yml run --rm models install buffalo_l
 docker compose -f server/deploy/compose.cpu.yml up -d
 curl -fsS http://127.0.0.1:18097/v1/health
 ```
+
+モデルのインストールと同時に生体検知を設定する場合は、代わりに次のコマンドを使います：
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+Server を先に起動する必要はありません。新規環境では次の `up -d` で生体検知が有効になります。すでに実行中の場合は `docker compose -f server/deploy/compose.cpu.yml restart server` が必要で、`up -d` だけでは保存済み設定を再読込しません。CUDA では `compose.cuda12.yml` を使います。
 
 GPU では `compose.cuda12.yml` とポート `18098` を使用します。モデルのダウンロード前にライセンスが表示されます。公開済み InsightFace 事前学習モデルは、別途商用ライセンスがない限り非商用研究用途に限定されます。
 
@@ -35,11 +38,28 @@ GPU では `compose.cuda12.yml` とポート `18098` を使用します。モデ
 
 ## 任意の生体検知 addon
 
-`server/config/server.toml` では生体検知は既定で無効です。`inference.addons` と `addons.auto_download` は両方 `[]` で、キーのない旧設定も無効のままです。以下は手動で有効にする例です。再起動前にモデルをインストールしてください。
+`server/config/server.toml` では生体検知は既定で無効です。`inference.addons` と `addons.auto_download` は両方 `[]` で、キーのない旧設定も無効のままです。
 
-**システム → 生体検知** で **ダウンロードして再起動後に有効化** を選びます。公開モデルの SHA-256 を検証後、両リストを `["liveness"]` に保存し、他の設定を保持します。検証済みキャッシュは再利用します。現在の処理は変わらず、**手動で Server を再起動**すると有効になります。失敗時はエラーと再試行を表示し、ダウンロード失敗では設定を有効にしません。
+**コマンドラインで有効化する方法（Server の初回起動前も使用可能）：**
+
+```bash
+docker compose -f server/deploy/compose.cpu.yml \
+  run --rm models install buffalo_l --accept-license --enable-liveness
+```
+
+`--enable-liveness` は最初に既存設定を更新できるか確認します。基本パッケージ、設定された追加ダウンロード、生体検知モデルをインストール・検証してから、`inference.addons` と `addons.auto_download` に `liveness` を追加し、他の項目、コメント、設定を保持します。検証済みキャッシュを再利用する場合も有効化設定を保存します。ダウンロード失敗時は設定を変更せず、設定保存に失敗するとエラーと非ゼロ終了コードを返します。保存済みの有効なモデルは再試行時に再利用できます。
+
+両 Compose サービスは既存の `server/config` 全体を `/etc/insightface` に書き込み可能でマウントし、`create_host_path: false` を保持します。Server が未起動でもインストーラーがホスト設定を原子的に更新できます。ディレクトリと `server.toml` は必須です。
+
+Server を先に起動する必要はありません。新規環境では次の `up -d` で生体検知が有効になります。すでに実行中の場合は `docker compose -f server/deploy/compose.cpu.yml restart server` が必要で、`up -d` だけでは保存済み設定を再読込しません。CUDA では `compose.cuda12.yml` を使います。
+
+`--enable-liveness` がない場合、`models install` は従来どおり設定を書き換えず、既定の生体検知は無効です。`models addons install liveness` はダウンロードと検証のみで、有効化しません。以下の **システム → 生体検知** から有効化する方法も使えます。
+
+**システム → 生体検知** で **ダウンロードして再起動後に有効化** を選びます。公開モデルの SHA-256 を検証後、両リストに `liveness` を追加し、他の項目、コメント、設定を保持します。検証済みキャッシュは再利用します。現在の処理は変わらず、**手動で Server を再起動**すると有効になります。失敗時はエラーと再試行を表示し、ダウンロード失敗では設定を有効にしません。
 
 システム画面は検証済みファイルの有無（`installed`）、現在の実行状態（`enabled`）、保存した次回起動設定（`configured_enabled`）、再起動の要否（`restart_required`）を別々に表示します。ダウンロードや設定保存だけでは現在の推論は変わりません。無効に戻すには同じ設定ファイルで `inference.addons=[]` と `addons.auto_download=[]` を保存して手動で再起動します。Web 操作は登録設定を変更せず、その既定値は `liveness_on_registration=false` です。
+
+**高度な使い方：手動設定。** 以下は有効化フラグや Web 操作の代替です。再起動前にモデルをインストールしてください。
 
 ```toml
 [inference]
@@ -67,16 +87,24 @@ docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
 
 ### Web ダウンロードのマウントと権限
 
-Compose は `/models` を読み取り専用に保ち、`server/.models/addons` だけを `/models/addons` に書き込み可能でマウントします。既存環境のアップグレードも含め、現在の Compose ファイルでモデルをインストールしたり起動したりする前に、上記の初期ディレクトリ準備を行ってください。Web 操作にはさらに、Server ユーザー（UID/GID 10001）が `/etc/insightface` にマウントされた `server/config` 全体に書き込める必要があります。これは `server.toml` の原子的な保存に必要です。Linux のリポジトリルートで実行します：
+標準 Compose は Server とモデルインストーラーに単一の書き込み可能な `/models`
+マウントを提供し、`create_host_path: true` を設定します。両方を root（`0:0`）と
+Docker 既定の capabilities で実行し、`cap_drop: [ALL]` は指定しません。
+コンテナのルートファイルシステムは読み取り専用のまま、`no-new-privileges` も保持します。
+ホスト UID/GID や `chmod 777` の設定は不要です。root は書き込み可能なマウント内の
+ファイルを変更でき、新規ダウンロードの所有者がホスト側で root になる場合があります。
 
-```bash
-sudo chgrp 10001 server/config server/config/server.toml
-sudo chmod g+rwxs server/config
-sudo chmod g+rw server/config/server.toml
-docker compose -f server/deploy/compose.cpu.yml up -d --force-recreate
-```
+両サービスが既存の `server/config` 全体を `/etc/insightface` に書き込み可能でマウントし、
+Web 操作と `--enable-liveness` が `server.toml` を原子的に保存します。このディレクトリと
+ファイルは必須で、Compose は設定元を自動作成しません。独自の配置では実際のパスを指定し、
+両サービスに同等の書き込み可能なディレクトリマウントを
+用意してください。独自の読み取り専用マウントは既存モデルの推論には使えますが、Web からの
+ダウンロードや設定保存には使えません。
 
-独自の配置では実際のマウント元に置き換え、CUDA では `compose.cuda12.yml` を使用します。従来の読み取り専用マウントでも、生体検知を無効にして運用できます。Web 操作が利用できない理由が表示された場合は、CLI でモデルをインストールして設定を手動編集する方法も使えます。Web 保存後は `docker compose -f server/deploy/compose.cpu.yml restart server` で反映します。マウントやプロキシ環境変数を変えた場合は、コンテナを再作成してください。
+CUDA では `compose.cuda12.yml` を使用します。ファイルが存在するだけでは生体検知は
+有効になりません。Web 保存後は `docker compose -f server/deploy/compose.cpu.yml restart server`
+で反映します。マウント、実行ユーザー、capabilities、プロキシ環境変数を変えた場合は
+コンテナを再作成してください。
 
 ダウンロードにプロキシが必要なら、コンテナ作成前に `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` を設定します。Compose は Server とモデルツールの両方へ渡します。プロキシにはコンテナから到達できる LAN アドレスを使います。コンテナ内の `127.0.0.1` は Mac ではありません。この操作は既存の API Key 認証を使い、認証が無効なら API に接続できる利用者も実行できます。対象は公開された固定の生体検知モデルだけで、任意の URL の入力や基本モデルパッケージの切り替えは提供しません。
 
@@ -166,7 +194,7 @@ Monitor はブラウザーと独立して動作し、有効な task は Server �
 
 ## 6. データと安全性
 
-`/data` を永続化し、基本モデルの `/models` は読み取り専用に保ちます。Web 管理の書き込み対象は `/models/addons` と設定ディレクトリだけです。大量削除前に SQLite と顔画像領域を一緒にバックアップしてください。API Key は hash 保存され、同じデータ volume で異なる `INSIGHTFACE_API_KEY` を指定して再起動すると Key がローテーションされます。画像、embedding、Key をログへ出力しないでください。
+`/data`、書き込み可能なモデルルート、設定ディレクトリを永続化します。コンテナのルートファイルシステムは読み取り専用で、Web モデル管理には既存の API 認証を適用します。大量削除前に SQLite と顔画像領域を一緒にバックアップしてください。API Key は hash 保存され、同じデータ volume で異なる `INSIGHTFACE_API_KEY` を指定して再起動すると Key がローテーションされます。画像、embedding、Key をログへ出力しないでください。
 
 開発者向け OpenAPI スキーマエクスプローラーは `/docs`、操作別の API 説明はこのヘルプ内にあります。障害報告には応答ヘッダーの `x-request-id` を含めてください。`401` は Key、`409 collection_model_mismatch` はモデル契約、`422 face_not_found` は有効顔を確認します。
 
@@ -251,23 +279,37 @@ make -C server build-cuda12
 ファイルを変更した場合は、再ビルドと検証が必要です。
 
 ローカルイメージを使う Compose 操作には `--pull never` を付けます。公開固定 Tag は
-`0.3.0-cpu` と `0.3.0-cuda12`、移動 Tag は `cpu` と `cuda12` で、`latest` は
+`0.3.1-cpu` と `0.3.1-cuda12`、移動 Tag は `cpu` と `cuda12` で、`latest` は
 ありません。アップグレード前に書き込みを止め、SQLite-safe な方法で `/data` と
 crop を一緒にバックアップしてください。`docker compose down -v` は Volume を
 削除するため使わないでください。
 
-### 0.3.0 へのアップグレード
+### 0.3.1 へのアップグレード
 
-このバージョンでは `raccoon_s` と `raccoon_l` およびモデル記述ファイルへの対応、
-任意の生体検知、Web からの追加モデルのインストール、BMP 画像入力を追加しました。
-Server は Raccoon の検出・認識モデルを使用し、パッケージの verifier はロードしません。
+0.3.1 は Docker デプロイを簡素化します。両サービスを root と Docker 既定の
+capabilities で実行し、単一の書き込み可能なモデルマウントを共有します。モデルルートが
+なければ Compose が作成し、明示的な addon ダウンロード時に `addons/` を作成します。
+ホスト UID/GID や共有グループの準備は不要です。
+
+0.3.0 から `raccoon_s`、`raccoon_l` とそのモデル記述、生体検知、Web addon
+インストール、BMP 入力に対応しています。Server は Raccoon の検出・認識モデルを使い、
+verifier はロードしません。0.3.1 でこれらの機能や API 応答の契約は変わりません。
 
 **1.** `server/config/server.toml` の設定とデプロイ環境固有の上書き設定を保持し、Server の
-ソースと Compose ファイルを 0.3.0 に更新します。既存のモデルパス、`/data` の
+ソースと Compose ファイルを 0.3.1 に更新します。既存のモデルパス、`/data` の
 ボリューム名、顔画像の保存先、ポート、API キー設定を維持してください。独自の
 Compose ファイルを使う場合は、`server` と `models` 両サービスのイメージを環境に
-合わせて `0.3.0-cpu` または `0.3.0-cuda12` に更新します。以下のコマンドにも、
+合わせて `0.3.1-cpu` または `0.3.1-cuda12` に更新します。以下のコマンドにも、
 普段と同じ Compose ファイル、上書き設定、プロジェクト名を適用してください。
+
+イメージタグの変更だけでは不十分です。独自の Compose と上書きファイルも更新し、
+両サービスを `user: "0:0"` に設定して、`cap_drop: [ALL]` と旧 UID/GID・共有グループ
+設定を削除してください。`/models` は `create_host_path: true` の単一の書き込み可能な
+マウントにし、独立した `/models/addons` マウントを削除します。ルートファイルシステムの
+読み取り専用と `no-new-privileges` は保持します。既存の設定ディレクトリとファイルも
+保持してください。両サービスで設定ディレクトリ全体の書き込みが必要です。インストーラーの
+旧読み取り専用ファイルマウントをディレクトリマウントに置き換えます。既存モデルと addon キャッシュは
+そのまま利用でき、標準構成では再帰的な権限変更や addon ディレクトリの事前作成は不要です。
 
 **2.** 新しいイメージを取得し、Server コンテナを再作成します。リポジトリのルートで、
 既存の環境に合うコマンドを選びます。
@@ -288,13 +330,13 @@ docker compose -f server/deploy/compose.cuda12.yml up -d --no-build --force-recr
 curl -fsS http://127.0.0.1:18098/v1/health
 ```
 
-ローカルでビルドする場合は、先に 0.3.0 のイメージをビルドし、取得する代わりに
+ローカルでビルドする場合は、先に 0.3.1 のイメージをビルドし、取得する代わりに
 `up -d --no-build --pull never --force-recreate server` を使います。
 `docker compose restart` だけでは新しいイメージへの切り替えやマウント変更は
 適用されません。
 
 **3.** 起動時にデータベースの移行が自動で適用されます。`/v1/health` が `ready` と
-バージョン `0.3.0` を返すまで待ち、**システム**でモデルと実行プロバイダーが
+バージョン `0.3.1` を返すまで待ち、**システム**でモデルと実行プロバイダーが
 想定どおりか確認します。既存の Collection と人物が残っていることを確かめ、
 既知の画像で検索してください。同じモデルと特徴量の契約を維持する場合、サンプル、
 特徴量、Collection の契約 ID は保持され、再登録は不要です。
@@ -316,10 +358,10 @@ Server は起動時にモデルをダウンロードしません。有効にす�
 契約に適合する必要があります。対応する Collection を作って再登録するか、別途データ移行を
 行ってください。Web UI から基本モデルパッケージを切り替えることはできません。
 
-**API と SDK の互換性:** モデル、Collection、FaceSample の結果には `model_version` が
+**0.3.0 以降の API と SDK の互換性:** モデル、Collection、FaceSample の結果には `model_version` が
 含まれなくなります。モデルは `model_id`、Collection の互換性は `embedding_contract_id` で
 識別します。削除されたフィールドを必須とするクライアントを修正し、同梱の Python クライアントを
-更新する場合は SDK `0.3.0` を使ってください。生体検知を実行した場合、`liveness` には
+更新する場合は SDK `0.3.1` を使ってください。生体検知を実行した場合、`liveness` には
 `status`、`is_live`、`live_score` の基本3項目が含まれ、`input_rejected` の場合だけ `reason` が追加されます。実行しなかった場合は `liveness` 自体を省略します。
 認識リクエストに生体検知を有効にする前に、[結果とエラーの扱い](#生体検知の結果)を確認してください。
 
