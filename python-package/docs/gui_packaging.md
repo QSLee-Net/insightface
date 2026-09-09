@@ -29,12 +29,40 @@ before building an NVIDIA artifact.
 
 ## Build Python Package
 
+Set the next unpublished version in `insightface/__init__.py` before preparing
+a release. Commit and push the intended source revision, then run
+**Actions > Manual Python Package CI > Run workflow** for that revision and
+wait for all jobs to pass. Build locally from the same revision with a clean
+working tree and an active Python 3.10+ virtual environment:
+
 ```bash
 cd python-package
-python -m pip install build twine
-python -m build
-python -m twine check dist/*
+python -m pip install build twine pytest
+python -m pip install -e ".[gui]"
+bash packaging/pypi/build_upload_pypi.sh --dry-run --python "$(command -v python)"
 ```
+
+The release helper runs the complete test suite (GUI, PrivateFrame, models,
+liveness, telemetry, and packaging), checks that the version is not already
+on PyPI, and removes old `build/`, `dist/`, and top-level `*.egg-info` outputs.
+It then builds in a fresh temporary directory, validates the wheel/source
+distribution pair, checks metadata and packaged assets, and runs
+`twine check --strict`. The validated files are copied to `dist/`.
+**`--dry-run` does not upload anything.**
+
+The GUI extra provides the dependencies for the complete test suite. Tests use
+Qt's offscreen platform by default and do not require model downloads or local
+test videos. `--no-clean` preserves old outputs and caches, so leave it off for
+the normal release process. A direct `python -m build` is useful for development
+but does not clean old outputs or run these release checks.
+
+The default wheel is `insightface-<version>-py3-none-any.whl`: one pure-Python
+wheel is shared by Windows, macOS, and Linux. The package requires Python
+**3.10 or newer**; the manual CI currently tests Python **3.10, 3.11, and 3.12**
+on all three operating systems. Availability on other Python versions and
+platforms also depends on dependencies such as ONNX Runtime and PySide6.
+Publish the accompanying `.tar.gz` source distribution with the wheel so
+source builds remain available; they are two files for the same PyPI release.
 
 ## Optional face3d Extension
 
@@ -61,45 +89,69 @@ The chosen parameter name is `--with-face3d`.
 
 ## Upload PyPI
 
-The repository includes a guarded release helper for official PyPI. It runs
-the complete Python test suite (GUI, PrivateFrame, models, liveness, telemetry,
-and packaging), checks that the version is not already published, builds the
-source distribution and wheel, validates their metadata and packaged assets,
-runs `twine check --strict`, and asks for explicit confirmation before upload.
-
-Install the GUI extra to provide the dependencies for the complete test suite.
-Tests use Qt's offscreen platform by default and do not require model downloads.
-
-Dry run:
+After the dry run above succeeds, upload those existing, validated files from
+the same terminal, Python environment, and source revision. The commands below
+assume the working directory is `python-package`. They read the source version
+without importing InsightFace, confirm that `dist/` contains exactly the
+matching wheel and source distribution, and upload those two filenames only.
+Do not rebuild between validation and upload or use `dist/*` for uploading.
 
 ```bash
-cd python-package
-python -m pip install build twine pytest
-python -m pip install -e ".[gui]"
-bash packaging/pypi/build_upload_pypi.sh --dry-run
+RELEASE_VERSION="$(python - <<'PY'
+from pathlib import Path
+import re
+
+text = Path("insightface/__init__.py").read_text(encoding="utf-8")
+match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", text, re.M)
+if match is None:
+    raise SystemExit("Cannot read the source version")
+print(match.group(1))
+PY
+)"
+RELEASE_WHEEL="dist/insightface-${RELEASE_VERSION}-py3-none-any.whl"
+RELEASE_SDIST="dist/insightface-${RELEASE_VERSION}.tar.gz"
+
+python packaging/pypi/release_artifacts.py \
+  --dist-dir dist --name insightface --version "$RELEASE_VERSION" >/dev/null &&
+python packaging/pypi/artifact_smoke.py inspect \
+  --wheel "$RELEASE_WHEEL" --sdist "$RELEASE_SDIST" &&
+python -m twine check --strict "$RELEASE_WHEEL" "$RELEASE_SDIST" &&
+python -m twine upload --repository pypi --username __token__ \
+  "$RELEASE_WHEEL" "$RELEASE_SDIST"
 ```
 
-Official upload:
+Twine prompts for a PyPI API token if no credentials are already available.
+Paste the complete `pypi-...` token at the prompt; it is not displayed while
+typing. A saved `TWINE_PASSWORD`, `~/.pypirc` entry, or keyring credential may
+allow upload without a prompt. Keep tokens out of command examples, source
+files, and release records.
+
+### Optional: Build and Upload in One Invocation
+
+The same release helper can also rebuild, validate, ask for an explicit
+confirmation, and upload in one invocation:
 
 ```bash
-cd python-package
 export TWINE_USERNAME=__token__
-export TWINE_PASSWORD='pypi-your-official-token'
-bash packaging/pypi/build_upload_pypi.sh
+bash packaging/pypi/build_upload_pypi.sh --python "$(command -v python)"
 ```
 
-The default release does not build `face3d`. To publish a package with the
-optional extension enabled, run:
+This invocation **builds new artifacts**; it does not upload the files saved by
+an earlier dry run. Use the manual upload above when the already-built files
+are the ones approved for release.
+
+The default release does not build `face3d`. For an intentionally separate
+release with the optional extension enabled and its build prerequisites
+installed, the helper also accepts:
 
 ```bash
 bash packaging/pypi/build_upload_pypi.sh --with-face3d
 ```
 
-Each invocation builds into a fresh temporary output directory. Only that
-build's validated wheel and source distribution can be uploaded; their package
-name, version, and Python requirement must match the release policy. Copies are
-saved in `dist/` for inspection. `--no-clean` retains existing caches and files,
-but older or unrelated distributions are excluded from validation and upload.
+An extension-enabled wheel is platform-specific; the `py3-none-any` filenames
+and cross-platform description above apply to the default release only.
+
+### Test and Release Notes
 
 To run the complete test suite independently, from `python-package`:
 
@@ -112,16 +164,16 @@ different modules can run together. `--dry-run` runs tests and builds without
 uploading; `--skip-tests` explicitly skips the test suite. Calling
 `python -m build` or `twine upload` directly does not run these release tests.
 
-On GitHub, **Actions > Manual Python Package CI > Run workflow** starts the
-manual workflow. It checks the artifacts, base/PrivateFrame/GUI installations,
-installed-wheel GUI tests, and the complete source suite across the configured
-operating systems and Python versions. It does not upload to PyPI or run on
-ordinary pushes.
+The manual GitHub workflow checks artifacts, base/PrivateFrame/GUI
+installations, installed-wheel GUI tests, and the complete source suite across
+the matrix described above. It does not upload to PyPI or run on ordinary
+pushes. If the source changes after CI or the local build, validate the new
+revision before releasing it.
 
 Only project maintainers or CI configured with PyPI Trusted Publisher should
 upload official PyPI releases. Codex should not attempt to upload PyPI.
 
-Before releasing 2.0, confirm model licenses, README content, version numbers,
+Before each release, confirm model licenses, README content, version numbers,
 wheel contents, third-party notices, and that the package name is `insightface`.
 PyPI versions are immutable, so a released version cannot be overwritten.
 
